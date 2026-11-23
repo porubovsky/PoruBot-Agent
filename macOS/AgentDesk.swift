@@ -310,6 +310,7 @@ struct Panel: View {
     @State private var mode = "accept-edits"
     @State private var timeout = 180
     @State private var request = ""
+    @State private var requestWidth: CGFloat = 460
     @State private var scope = ""
     @State private var optimize = true
     @State private var preview = false
@@ -402,6 +403,17 @@ struct Panel: View {
                 }
             }
         }
+    }
+
+    private var requestHeight: CGFloat {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 4
+        let text = NSAttributedString(string: request + "\n", attributes: [
+            .font: NSFont.systemFont(ofSize: 14), .paragraphStyle: style
+        ])
+        let size = NSSize(width: max(60, requestWidth - 26), height: 10_000)
+        let height = text.boundingRect(with: size, options: [.usesLineFragmentOrigin, .usesFontLeading]).height
+        return min(210, max(62, ceil(height) + 18))
     }
 
     private var text: String {
@@ -630,7 +642,14 @@ struct Panel: View {
                     TextEditor(text: $request)
                         .font(.system(size: 14)).lineSpacing(4)
                         .scrollContentBackground(.hidden)
-                        .padding(8).frame(minHeight: 90)
+                        .padding(8).frame(height: requestHeight)
+                        .background {
+                            GeometryReader { geometry in
+                                Color.clear
+                                    .onAppear { requestWidth = geometry.size.width }
+                                    .onChange(of: geometry.size.width) { requestWidth = $0 }
+                            }
+                        }
                         .background(surface, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.20)))
                         .accessibilityLabel("Задача")
@@ -674,7 +693,7 @@ struct Panel: View {
                                 }
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                    }.frame(minHeight: 130)
+                    }.frame(minHeight: 220, maxHeight: .infinity)
                         .background(surface, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.20)))
                 }

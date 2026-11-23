@@ -21,7 +21,9 @@ PoruBot Agent запускает локальных агентов в выбра
 
 ## Windows
 
-Распакуйте архив и откройте **Start PoruBot Agent.cmd**. Нужна Windows 10 или 11 с Windows PowerShell 5.1 и `curl.exe`. Установка Python, WSL или Node.js для запуска интерфейса не требуется. Требования к конкретному агенту определяет его поставщик. В режиме Claude Code и OpenRouter на Windows доступны операции с файлами, запуск команд из интерфейса отключён. Для локальных вычислений через команды на Windows выберите Antigravity или Codex.
+Распакуйте архив и откройте **PoruBot Agent.exe**. Сборка для Windows 10/11 x64 включает среду .NET. Графический интерфейс запускается напрямую. Для автоматической установки агентских CLI используется системный `curl.exe` и официальный установщик выбранного провайдера. Требования к конкретному агенту определяет его поставщик. В режиме Claude Code и OpenRouter на Windows доступны операции с файлами, запуск команд из интерфейса отключён. Для локальных вычислений через команды на Windows выберите Antigravity или Codex.
+
+Для сборки из исходников используйте .NET 10 SDK: `dotnet publish Windows/Desktop/PoruBot.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true`.
 
 ## Иконка
 
