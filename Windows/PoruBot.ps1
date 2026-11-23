@@ -1,6 +1,7 @@
 ﻿#requires -Version 5.1
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Security
 [Windows.Forms.Application]::EnableVisualStyles()
 $providers = @(
     @{Name='Antigravity'; Bin='agy'; Key='GEMINI_API_KEY'; URL='https://antigravity.google/cli/install.cmd'; Ext='cmd'; Models=@('gemini-3.8-flash','gemini-3.7-flash','gemini-3.6-flash')},
@@ -9,6 +10,12 @@ $providers = @(
     @{Name='OpenRouter'; Bin='claude'; Key='OPENROUTER_API_KEY'; URL='https://claude.ai/install.cmd'; Ext='cmd'; Models=@('~anthropic/claude-sonnet-latest','~anthropic/claude-haiku-latest','~anthropic/claude-opus-latest')}
 )
 $secrets = @{}
+$settingsDirectory = Join-Path $env:LOCALAPPDATA 'PoruBot Agent'
+$settingsPath = Join-Path $settingsDirectory 'settings.json'
+$savedAccess = $null
+if (Test-Path -LiteralPath $settingsPath) {
+    try { $savedAccess = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json -ErrorAction Stop } catch {}
+}
 $script:job = $null
 $script:catalog = @{}
 $script:selected = 0
@@ -91,8 +98,25 @@ function Start-Agent($config) {
     if ($config.Model) { $selection = @('--model',$config.Model) }
     $level = @()
     if ($config.Effort) { $level = @('--effort',$config.Effort) }
+    $folders = @()
+    if ($config.AllFolders -and -not $config.Plan -and -not $config.Catalog) {
+        foreach ($drive in [IO.DriveInfo]::GetDrives()) {
+            if ($drive.IsReady -and $drive.DriveType -in @('Fixed','Removable')) {
+                $folders += @('--add-dir',$drive.RootDirectory.FullName)
+            }
+        }
+    }
     if ($p.Bin -eq 'agy') {
-        $args = @('--settings','{"modelProvider":"gemini"}')
+        $settings = @{modelProvider='gemini'}
+        $sandboxFlag = '--sandbox'
+        if (-not $config.Catalog -and -not $config.Plan) {
+            if ($config.AllCommands) { $settings.permissions = @{allow=@('command(*)')} }
+            if ($config.OutsideSandbox) {
+                $settings.enableTerminalSandbox = $false
+                $sandboxFlag = '--sandbox=false'
+            }
+        }
+        $args = @('--settings',($settings | ConvertTo-Json -Compress -Depth 4))
         if ($config.Catalog) {
             $status.Text = 'Читаю каталог Antigravity…'
             Start-Child $exe ($args + @('models')) $env:USERPROFILE '' 'catalog' $config $vars 35
@@ -109,12 +133,12 @@ function Start-Agent($config) {
             $selection = @('--model',"$($config.Model)-$($config.Effort)")
             $level = @()
         }
-        $args += @('--input-format','stream-json','--output-format','stream-json','--disable-slash-commands','--sandbox','--mode',$mode) + $selection + $level
+        $args += @('--input-format','stream-json','--output-format','stream-json','--disable-slash-commands',$sandboxFlag,'--mode',$mode) + $folders + $selection + $level
         $payload = (@{event='user';message=@{content=$payload}} | ConvertTo-Json -Compress -Depth 3) + "`n"
     } elseif ($p.Bin -eq 'codex') {
         $sandbox = if ($config.Plan) { 'read-only' } else { 'workspace-write' }
         $args = @('exec','--json','--ephemeral','--skip-git-repo-check','--sandbox',$sandbox,'-c','model_provider="openai"',
-            '-c','shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]') + $selection
+            '-c','shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]') + $folders + $selection
         if ($config.Effort) { $args += @('-c',('model_reasoning_effort="' + $config.Effort + '"')) }
         $args += '-'
     } else {
@@ -123,7 +147,7 @@ function Start-Agent($config) {
         }
         $mode = if ($config.Plan) { 'plan' } else { 'acceptEdits' }
         $args = @('-p','--verbose','--output-format','stream-json','--no-session-persistence','--permission-mode',$mode,
-            '--disallowedTools','Bash,PowerShell,Monitor') + $selection + $level
+            '--disallowedTools','Bash,PowerShell,Monitor') + $folders + $selection + $level
     }
     $status.Text = "Запускаю $($p.Name)…"
     Start-Child $exe $args $config.Folder $payload 'run' $config $vars $config.Seconds
@@ -135,6 +159,55 @@ function Stop-Child {
     if (-not $script:job.Process.HasExited) {
         & "$env:SystemRoot\System32\taskkill.exe" /PID $script:job.Process.Id /T /F 2>&1 | Out-Null
     }
+}
+
+function Add-ResultText($text, $font, $color) {
+    $result.SelectionStart = $result.TextLength
+    $result.SelectionFont = $font
+    $result.SelectionColor = $color
+    $result.AppendText([string]$text)
+}
+
+function Show-Result($answer, $diagnostics) {
+    $result.Clear()
+    $code = $false
+    $escaped = $answer -match '(?m)^\s*(?:\\#|\\[*+-]|\d+\\\.)'
+    foreach ($original in ($answer -split "\r?\n")) {
+        $line = $original
+        if ($escaped -and -not $code) { $line = $line -replace '\\([#*_`\[\]().+!-])','$1' }
+        if ($line.TrimStart() -match '^(?:```|~~~)') { $code = -not $code; continue }
+        if ($code) { Add-ResultText ($line + [Environment]::NewLine) $monoFont $result.ForeColor; continue }
+        $font = $bodyFont
+        if ($line -match '^\s*#{1,6}\s+(.+)$') {
+            $line = $Matches[1]
+            $font = $headingFont
+        } elseif ($line -match '^(\s*)[-*+]\s+(.+)$') {
+            $line = $Matches[1] + '• ' + $Matches[2]
+        }
+        $parts = [regex]::Matches($line, '\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\)')
+        $offset = 0
+        foreach ($part in $parts) {
+            if ($part.Index -gt $offset) {
+                Add-ResultText ($line.Substring($offset, $part.Index - $offset)) $font $result.ForeColor
+            }
+            if ($part.Groups[1].Success) {
+                Add-ResultText $part.Groups[1].Value $boldFont $result.ForeColor
+            } elseif ($part.Groups[2].Success) {
+                Add-ResultText $part.Groups[2].Value $monoFont $result.ForeColor
+            } else {
+                Add-ResultText $part.Groups[3].Value $font ([Drawing.Color]::MidnightBlue)
+            }
+            $offset = $part.Index + $part.Length
+        }
+        if ($offset -lt $line.Length) { Add-ResultText ($line.Substring($offset)) $font $result.ForeColor }
+        Add-ResultText ([Environment]::NewLine) $bodyFont $result.ForeColor
+    }
+    if ($diagnostics) {
+        if ($answer) { Add-ResultText ([Environment]::NewLine + 'Диагностика CLI' + [Environment]::NewLine) $boldFont $result.ForeColor }
+        Add-ResultText $diagnostics $monoFont $result.ForeColor
+    }
+    $result.SelectionStart = 0
+    $result.ScrollToCaret()
 }
 
 function Finish-Child($job, $stdout, $stderr) {
@@ -203,8 +276,9 @@ function Finish-Child($job, $stdout, $stderr) {
                 Where-Object { $null -ne $_ } | Select-Object -First 1
             $metrics.Text = "Вход: $($usage.input_tokens)   Выход: $($usage.output_tokens)   Thinking: $($usage.thinking_tokens)   Кэш: $cache"
         }
-        $result.Text = (@($answer,$errorText,$stderr) | Where-Object { $_ }) -join "`r`n`r`n"
-        if (-not $result.Text -and -not $success) { $result.Text = $stdout }
+        $diagnostics = (@($errorText,$stderr) | Where-Object { $_ }) -join "`r`n`r`n"
+        if (-not $answer -and -not $diagnostics -and -not $success) { $diagnostics = $stdout }
+        Show-Result $answer $diagnostics
     } else {
         $status.Text = "CLI или установка завершились с ошибкой (код $code)."
         $result.Text = $stdout + "`r`n" + $stderr
@@ -214,8 +288,8 @@ function Finish-Child($job, $stdout, $stderr) {
 
 $form = New-Object Windows.Forms.Form
 $form.Text = 'PoruBot Agent'
-$form.ClientSize = New-Object Drawing.Size(800,620)
-$form.MinimumSize = New-Object Drawing.Size(816,659)
+$form.ClientSize = New-Object Drawing.Size(800,680)
+$form.MinimumSize = New-Object Drawing.Size(816,719)
 $form.StartPosition = 'CenterScreen'
 $form.Font = New-Object Drawing.Font('Segoe UI',10)
 $iconPath = Join-Path $PSScriptRoot 'PoruBot.ico'
@@ -228,7 +302,7 @@ function Add-Control($parent,$type,$caption,$x,$y,$w,$h) {
     $parent.Controls.Add($control)
     return $control
 }
-$controls = Add-Control $form Panel '' 0 0 800 375
+$controls = Add-Control $form Panel '' 0 0 800 435
 $controls.Anchor = 'Top,Left,Right'
 [void](Add-Control $controls Label 'Движок' 18 20 95 24)
 $engine = Add-Control $controls ComboBox '' 118 17 205 28
@@ -266,17 +340,57 @@ $request.Multiline = $true; $request.ScrollBars = 'Vertical'; $request.Anchor = 
 $scope = Add-Control $controls TextBox '' 118 296 659 29
 $scope.Anchor = 'Top,Left,Right'
 $preview = Add-Control $controls Button 'Показать промпт' 118 332 166 30
-$run = Add-Control $form Button 'Запустить' 587 380 92 31
+$allCommands = Add-Control $controls CheckBox 'Все команды' 18 374 162 26
+$allFolders = Add-Control $controls CheckBox 'Все доступные папки' 190 374 190 26
+$outsideSandbox = Add-Control $controls CheckBox 'Команды без песочницы' 390 374 210 26
+$saveKey = Add-Control $controls Button 'Сохранить ключ' 610 371 167 29
+$allCommands.Checked = [bool]$savedAccess.allCommands
+$allFolders.Checked = [bool]$savedAccess.allFolders
+$outsideSandbox.Checked = [bool]$savedAccess.outsideSandbox
+$run = Add-Control $form Button 'Запустить' 587 432 92 31
 $run.Anchor = 'Top,Right'
-$stop = Add-Control $form Button 'Стоп' 687 380 90 31
+$stop = Add-Control $form Button 'Стоп' 687 432 90 31
 $stop.Anchor = 'Top,Right'; $stop.Enabled = $false
-$status = Add-Control $form Label 'Готово к запуску' 18 385 557 24
+$status = Add-Control $form Label 'Готово к запуску' 18 437 557 24
 $status.Anchor = 'Top,Left,Right'
-$metrics = Add-Control $form Label '' 18 421 759 24
+$metrics = Add-Control $form Label '' 18 473 759 24
 $metrics.Anchor = 'Top,Left,Right'
-$result = Add-Control $form TextBox '' 18 449 759 151
+$result = Add-Control $form RichTextBox '' 18 501 759 159
 $result.Multiline = $true; $result.ReadOnly = $true; $result.ScrollBars = 'Vertical'
 $result.Anchor = 'Top,Bottom,Left,Right'
+$result.DetectUrls = $false
+$bodyFont = New-Object Drawing.Font('Segoe UI',10)
+$boldFont = New-Object Drawing.Font('Segoe UI',10,[Drawing.FontStyle]::Bold)
+$headingFont = New-Object Drawing.Font('Segoe UI Semibold',13,[Drawing.FontStyle]::Bold)
+$monoFont = New-Object Drawing.Font('Consolas',10)
+
+function Key-Path($provider) {
+    Join-Path $settingsDirectory ($provider.Key + '.bin')
+}
+
+function Update-AccessControls {
+    $gemini = $engine.SelectedIndex -eq 0
+    $allCommands.Enabled = $gemini -and -not $plan.Checked
+    $outsideSandbox.Enabled = $gemini -and -not $plan.Checked
+    $allFolders.Enabled = -not $plan.Checked
+}
+
+function Save-Access {
+    if ($script:editingAccess) { return }
+    [void][IO.Directory]::CreateDirectory($settingsDirectory)
+    @{allCommands=$allCommands.Checked;allFolders=$allFolders.Checked;outsideSandbox=$outsideSandbox.Checked} |
+        ConvertTo-Json -Compress | Set-Content -LiteralPath $settingsPath -Encoding UTF8
+}
+
+function Confirm-Access($control, $message) {
+    if ($script:editingAccess) { return }
+    if ($control.Checked -and [Windows.Forms.MessageBox]::Show($form, $message, 'Доступ агента', 'YesNo', 'Warning') -ne 'Yes') {
+        $script:editingAccess = $true
+        $control.Checked = $false
+        $script:editingAccess = $false
+    }
+    Save-Access
+}
 
 function Get-Prompt {
     $value = $request.Text.Trim()
@@ -300,7 +414,7 @@ function Submit($catalogOnly) {
     }
     $result.Clear(); $metrics.Text = ''
     $config = @{Provider=$provider;Key=$key.Text.Trim();Model=$model.Text.Trim();Effort=$effort.Text;
-        Plan=$plan.Checked;Folder=$folder.Text;Seconds=[int]$seconds.Value;Prompt=(Get-Prompt);Catalog=$catalogOnly;Installed=$false}
+        Plan=$plan.Checked;AllCommands=$allCommands.Checked;AllFolders=$allFolders.Checked;OutsideSandbox=$outsideSandbox.Checked;Folder=$folder.Text;Seconds=[int]$seconds.Value;Prompt=(Get-Prompt);Catalog=$catalogOnly;Installed=$false}
     try { Start-Agent $config } catch { $status.Text = 'Ошибка запуска.'; $result.Text = $_.Exception.Message }
 }
 
@@ -310,6 +424,15 @@ $engine.add_SelectedIndexChanged({
     $p = $providers[$script:selected]
     $keyLabel.Text = $p.Key
     $value = $secrets[$script:selected]
+    if ($null -eq $value) {
+        $storedKey = Key-Path $p
+        if (Test-Path -LiteralPath $storedKey) {
+            try {
+                $value = $utf8.GetString([Security.Cryptography.ProtectedData]::Unprotect(
+                    [IO.File]::ReadAllBytes($storedKey), $null, [Security.Cryptography.DataProtectionScope]::CurrentUser))
+            } catch { $status.Text = 'Не удалось прочитать сохранённый ключ.' }
+        }
+    }
     if ($null -eq $value) { $value = [Environment]::GetEnvironmentVariable($p.Key) }
     $key.Text = [string]$value
     $model.Items.Clear()
@@ -322,8 +445,27 @@ $engine.add_SelectedIndexChanged({
     if ($p.Bin -ne 'claude') { $levels += 'minimal' }
     $effort.Items.AddRange([object[]]$levels)
     $effort.SelectedIndex = if ($p.Bin -eq 'claude') { 0 } else { 1 }
+    Update-AccessControls
 })
 $engine.SelectedIndex = 0
+$plan.add_CheckedChanged({ Update-AccessControls })
+$allCommands.add_CheckedChanged({ Save-Access })
+$allFolders.add_CheckedChanged({
+    Confirm-Access $allFolders 'Агент получит доступ за пределами рабочей папки на доступных локальных дисках. Настройка сохранится.'
+})
+$outsideSandbox.add_CheckedChanged({
+    Confirm-Access $outsideSandbox 'Разрешённые команды Antigravity смогут работать с файлами и сетью вне песочницы. Настройка сохранится.'
+})
+$saveKey.add_Click({
+    if (-not $key.Text.Trim()) { $status.Text = 'Вставь ключ провайдера.'; return }
+    try {
+        [void][IO.Directory]::CreateDirectory($settingsDirectory)
+        $encrypted = [Security.Cryptography.ProtectedData]::Protect(
+            $utf8.GetBytes($key.Text.Trim()), $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        [IO.File]::WriteAllBytes((Key-Path $providers[$engine.SelectedIndex]), $encrypted)
+        $status.Text = 'Ключ сохранён для текущего пользователя Windows.'
+    } catch { $status.Text = 'Не удалось сохранить ключ.' }
+})
 $browse.add_Click({
     $dialog = New-Object Windows.Forms.FolderBrowserDialog
     try { if ($dialog.ShowDialog($form) -eq 'OK') { $folder.Text = $dialog.SelectedPath } } finally { $dialog.Dispose() }

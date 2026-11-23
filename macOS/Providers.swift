@@ -3,6 +3,15 @@ import Foundation
 enum Engine: String, CaseIterable {
     case gemini = "Antigravity", claude = "Claude Code", codex = "Codex", router = "OpenRouter"
 
+    var symbol: String {
+        switch self {
+        case .gemini: return "sparkles"
+        case .claude: return "asterisk"
+        case .codex: return "chevron.left.forwardslash.chevron.right"
+        case .router: return "arrow.triangle.branch"
+        }
+    }
+
     var binary: String {
         switch self {
         case .gemini: return "agy"
@@ -75,28 +84,51 @@ enum Engine: String, CaseIterable {
         return env
     }
 
-    func arguments(model: String, effort: String, mode: String, catalog: Bool) -> [String] {
-        let setting = ["--settings", #"{"modelProvider":"gemini"}"#]
+    static func commandPrefixes(_ text: String) -> [String]? {
+        let entries = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " _./-"))
+        guard entries.count <= 20, entries.allSatisfy({ entry in
+            entry.count <= 240 && entry.unicodeScalars.allSatisfy(allowed.contains)
+                && entry.split(separator: " ").count >= 2
+        }) else { return nil }
+        return entries
+    }
+
+    private static func geminiSettings(commands: [String], sandbox: Bool) -> String {
+        var settings: [String: Any] = ["modelProvider": "gemini"]
+        if !sandbox { settings["enableTerminalSandbox"] = false }
+        if !commands.isEmpty {
+            settings["permissions"] = ["allow": commands.map { "command(\($0))" }]
+        }
+        let data = try! JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func arguments(model: String, effort: String, mode: String, catalog: Bool, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false) -> [String] {
         let selection = model.isEmpty ? [] : ["--model", model]
         let thinking = effort.isEmpty ? [] : ["--effort", effort]
+        let folders = allFolders && !catalog && mode != "plan" ? ["--add-dir", "/"] : []
         switch self {
         case .gemini:
+            let sandbox = catalog || mode != "accept-edits" || !outsideSandbox
+            let setting = ["--settings", Self.geminiSettings(commands: catalog || mode == "plan" ? [] : commands, sandbox: sandbox)]
             return catalog ? setting + ["models"] : setting + [
                 "--input-format", "stream-json", "--output-format", "stream-json", "--disable-slash-commands",
-                "--sandbox", "--mode", mode
-            ] + selection + thinking
+                sandbox ? "--sandbox" : "--sandbox=false", "--mode", mode
+            ] + folders + selection + thinking
         case .codex:
             let reasoning = effort.isEmpty ? [] : ["-c", "model_reasoning_effort=\"\(effort)\""]
             let sandbox = mode == "plan" ? "read-only" : "workspace-write"
             return ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", sandbox,
                     "-c", #"model_provider="openai""#,
                     "-c", #"shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]"#]
-                + selection + reasoning + ["-"]
+                + folders + selection + reasoning + ["-"]
         case .claude, .router:
             let commandSettings = #"{"sandbox":{"enabled":true,"failIfUnavailable":true,"autoAllowBashIfSandboxed":true,"allowUnsandboxedCommands":false}}"#
             return ["-p", "--verbose", "--output-format", "stream-json", "--no-session-persistence",
                     "--permission-mode", mode == "plan" ? "plan" : "acceptEdits",
-                    "--settings", commandSettings] + selection + thinking
+                    "--settings", commandSettings] + folders + selection + thinking
         }
     }
 }

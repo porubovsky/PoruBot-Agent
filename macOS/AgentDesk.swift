@@ -106,7 +106,7 @@ final class Runner: ObservableObject {
     }
 
     func start(engine: Engine, path: String, folder: String, key: String, model: String,
-               effort: String, mode: String, timeout: Int, prompt: String?) {
+               effort: String, mode: String, timeout: Int, prompt: String?, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false) {
         guard !working else { return }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { status = "Вставь ключ " + engine.keyName + "."; return }
@@ -120,7 +120,7 @@ final class Runner: ObservableObject {
             task.currentDirectoryURL = URL(fileURLWithPath: folder)
         }
         task.environment = engine.environment(key: key)
-        task.arguments = engine.arguments(model: model, effort: effort, mode: mode, catalog: prompt == nil)
+        task.arguments = engine.arguments(model: model, effort: effort, mode: mode, catalog: prompt == nil, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox)
         run(task, engine: engine, key: key, prompt: prompt, timeout: prompt == nil ? 25 : timeout)
     }
 
@@ -246,7 +246,16 @@ final class Runner: ObservableObject {
                     } else {
                         let valid = engine == .codex ? openAIUsage != nil && openAIError == nil
                             : engine == .gemini ? final?.status == "SUCCESS" : final?.is_error == false
-                        self.status = code == 0 && valid ? "Завершено" : "CLI завершился без успешного результата (код \(code))."
+                        let diagnostic = self.diagnostics.lowercased()
+                        if engine == .gemini && diagnostic.contains("no output produced")
+                            && diagnostic.contains("unsandboxed") {
+                            self.status = "Antigravity запросил команду вне песочницы"
+                        } else if engine == .gemini && diagnostic.contains("no output produced")
+                            && diagnostic.contains("command") && diagnostic.contains("permission") {
+                            self.status = "Antigravity отклонил команду"
+                        } else {
+                            self.status = code == 0 && valid ? "Завершено" : "CLI завершился без успешного результата (код \(code))."
+                        }
                     }
                 }
             }
@@ -277,9 +286,19 @@ struct Panel: View {
     @State private var engine = Engine.gemini
     @State private var keys: [Engine: String] = [:]
     @State private var paths: [Engine: String] = [:]
+    @AppStorage("keychainEntries") private var keychainEntries = Data()
+    @State private var showKeychain = false
+    @State private var keychainService = ""
+    @State private var keychainAccount = ""
+    @State private var keychainMessage: [Engine: String] = [:]
+    @State private var keychainLoading: Set<Engine> = []
+    @State private var keychainSaving: Set<Engine> = []
+    private var linkedEntries: [String: KeychainEntry] {
+        (try? JSONDecoder().decode([String: KeychainEntry].self, from: keychainEntries)) ?? [:]
+    }
     private var key: Binding<String> {
         Binding(get: { keys[engine] ?? Engine.inherited[engine.keyName] ?? "" },
-                set: { keys[engine] = $0 })
+                set: { keys[engine] = $0; keychainMessage.removeValue(forKey: engine) })
     }
     private var path: Binding<String> {
         Binding(get: { engine == .gemini ? cliPath : (paths[engine] ?? engine.resolve("") ?? "") },
@@ -295,6 +314,95 @@ struct Panel: View {
     @State private var optimize = true
     @State private var preview = false
     @State private var showDiagnostics = false
+    @State private var commandText = ""
+    @State private var showCommands = false
+    @AppStorage("antigravityAllCommands") private var allowAllCommands = false
+    @AppStorage("agentAllFolders") private var allFoldersEnabled = false
+    @State private var confirmAllFolders = false
+    @AppStorage("antigravityOutsideSandbox") private var outsideSandboxEnabled = false
+    @State private var confirmOutsideSandbox = false
+    private var activeCommands: [String]? { Engine.commandPrefixes(commandText) }
+
+    private func openKeychainSettings() {
+        let entry = linkedEntries[engine.keyName]
+        keychainService = entry?.service ?? engine.keyName
+        keychainAccount = entry?.account ?? ""
+        showKeychain = true
+    }
+
+    private func linkKeychain(_ entry: KeychainEntry?) {
+        var entries = linkedEntries
+        entries[engine.keyName] = entry
+        guard let encoded = try? JSONEncoder().encode(entries) else { return }
+        keychainEntries = encoded
+        keys.removeValue(forKey: engine)
+        keychainMessage.removeValue(forKey: engine)
+        showKeychain = false
+        if entry != nil { loadKeychain(for: engine) }
+    }
+
+    private func openPasswords() {
+        let provider = engine
+        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Passwords")
+            ?? [URL(fileURLWithPath: "/System/Applications/Passwords.app")].first(where: {
+                FileManager.default.fileExists(atPath: $0.path)
+            }) else {
+            keychainMessage[provider] = "Приложение «Пароли» недоступно на этой версии macOS."
+            return
+        }
+        NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            guard error != nil else { return }
+            DispatchQueue.main.async { keychainMessage[provider] = "Не удалось открыть «Пароли»." }
+        }
+    }
+
+    private func saveCurrentKey() {
+        let provider = engine
+        let secret = key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !secret.isEmpty, keychainSaving.insert(provider).inserted else { return }
+        let entry = KeychainEntry.porubot(provider.keyName)
+        keychainMessage[provider] = "Сохраняю ключ…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = entry.save(secret)
+            DispatchQueue.main.async {
+                keychainSaving.remove(provider)
+                switch result {
+                case .success:
+                    var entries = linkedEntries
+                    entries[provider.keyName] = entry
+                    if let encoded = try? JSONEncoder().encode(entries) { keychainEntries = encoded }
+                    if keys[provider] == nil { keys[provider] = secret }
+                    keychainMessage[provider] = "Ключ сохранён в Связке ключей"
+                case let .failure(error):
+                    keychainMessage[provider] = error.message
+                }
+            }
+        }
+    }
+
+    private func loadKeychain(for provider: Engine) {
+        guard keys[provider] == nil, let entry = linkedEntries[provider.keyName],
+              keychainLoading.insert(provider).inserted else { return }
+        keychainMessage[provider] = "Читаю Связку ключей…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = entry.read()
+            DispatchQueue.main.async {
+                keychainLoading.remove(provider)
+                guard linkedEntries[provider.keyName] == entry, keys[provider] == nil else {
+                    keychainMessage.removeValue(forKey: provider)
+                    if linkedEntries[provider.keyName] != entry { loadKeychain(for: provider) }
+                    return
+                }
+                switch result {
+                case let .success(secret):
+                    keys[provider] = secret
+                    keychainMessage[provider] = "Ключ из Связки ключей"
+                case let .failure(error):
+                    keychainMessage[provider] = error.message
+                }
+            }
+        }
+    }
 
     private var text: String {
         let task = request.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -313,6 +421,16 @@ struct Panel: View {
         let isExactGeminiID = name.wholeMatch(of: /gemini-[a-z0-9.\-]+-(minimal|low|medium|high|xhigh|max)/) != nil
         let exactID = catalogID ?? (isExactGeminiID ? name : nil)
         let chosen = engine
+        let useCommands = chosen == .gemini && prompt != nil && mode != "plan"
+        let allowAll = useCommands && allowAllCommands
+        guard !useCommands || allowAll || activeCommands != nil else {
+            runner.status = "Проверь список команд Antigravity."
+            showCommands = true
+            return
+        }
+        let commands = allowAll ? ["*"] : (useCommands ? (activeCommands ?? []) : [])
+        let allFolders = prompt != nil && mode != "plan" && allFoldersEnabled
+        let outsideSandbox = useCommands && mode == "accept-edits" && outsideSandboxEnabled
         let preferred = (path.wrappedValue as NSString).expandingTildeInPath
         let secret = key.wrappedValue
         let selectedEffort = chosen == .gemini && (exactID != nil || name.isEmpty) ? "" : effort
@@ -320,7 +438,7 @@ struct Panel: View {
         let run: (String) -> Void = { executable in
             runner.start(engine: chosen, path: executable, folder: prompt == nil ? "" : folder,
                          key: secret, model: selectedModel, effort: selectedEffort,
-                         mode: mode, timeout: timeout, prompt: prompt)
+                         mode: mode, timeout: timeout, prompt: prompt, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox)
         }
         if let executable = chosen.resolve(preferred) {
             run(executable)
@@ -336,34 +454,129 @@ struct Panel: View {
         }
     }
 
+    private var accent: Color { Color(nsColor: .systemIndigo) }
+    private var surface: Color { Color(nsColor: .controlBackgroundColor) }
+
+    private func section(_ title: String, icon: String) -> some View {
+        Label {
+            Text(title).font(.custom("AvenirNext-DemiBold", size: 14, relativeTo: .headline))
+        } icon: {
+            Image(systemName: icon).foregroundStyle(accent)
+        }
+    }
+
+    private var accessControls: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                if mode == "plan" {
+                    Label("В режиме «План» расширенный доступ не применяется.", systemImage: "lock")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    if engine == .gemini {
+                        Toggle(isOn: $allowAllCommands) {
+                            Label("Все команды", systemImage: "terminal")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .help("Разрешает любую команду, включая удаление или перезапись, в пределах песочницы.")
+                        Button { showCommands = true } label: {
+                            Label("Выбрать команды…", systemImage: "list.bullet.rectangle")
+                        }
+                        .disabled(allowAllCommands)
+                        if mode == "accept-edits" {
+                            Toggle(isOn: Binding(
+                                get: { outsideSandboxEnabled },
+                                set: { if $0 { confirmOutsideSandbox = true } else { outsideSandboxEnabled = false } }
+                            )) {
+                                Label("Команды без песочницы", systemImage: "lock.open")
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .alert("Запустить Antigravity без песочницы команд?", isPresented: $confirmOutsideSandbox) {
+                                Button("Отмена", role: .cancel) {}
+                                Button("Включить") { outsideSandboxEnabled = true }
+                            } message: {
+                                Text("Разрешённые команды смогут работать с файлами и сетью вне песочницы. Настройка сохранится для следующих задач.")
+                            }
+                        }
+                    } else {
+                        Label("Команды: правила движка", systemImage: "terminal")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Toggle(isOn: Binding(
+                        get: { allFoldersEnabled },
+                        set: { if $0 { confirmAllFolders = true } else { allFoldersEnabled = false } }
+                    )) {
+                        Label("Все доступные папки", systemImage: "folder.badge.plus")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Text("Настройки действуют, пока включены.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }.toggleStyle(.switch).padding(5)
+        } label: {
+            section("Доступ агента", icon: "lock.shield")
+        }
+        .confirmationDialog("Открыть агенту доступ ко всем папкам?", isPresented: $confirmAllFolders, titleVisibility: .visible) {
+            Button("Включить") { allFoldersEnabled = true }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Агент сможет читать и править файлы за пределами выбранной папки. Доступ останется включённым, пока ты его не отключишь.")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("PoruBot Agent").font(.largeTitle.weight(.semibold))
+            HStack(spacing: 12) {
+                Image(nsImage: NSApplication.shared.applicationIconImage)
+                    .resizable().interpolation(.high).frame(width: 48, height: 48)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("PoruBot Agent").font(.custom("AvenirNext-DemiBold", size: 26, relativeTo: .title))
+                    Label(engine.rawValue, systemImage: engine.symbol)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Label(runner.status, systemImage: runner.working ? "hourglass" : "terminal")
+                    .font(.system(.caption, design: .rounded).weight(.medium))
                     .foregroundStyle(.secondary).lineLimit(2)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(.thinMaterial, in: Capsule())
             }
+            .padding(12)
+            .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+            .padding(.top, 12)
             HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 12) {
-                    GroupBox("Подключение") {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                    GroupBox {
                         VStack(alignment: .leading, spacing: 9) {
                             Picker("Движок", selection: $engine) {
                                 ForEach(Engine.allCases, id: \.self) { Text($0.rawValue) }
                             }
                             SecureField(engine.keyName, text: key)
+                            Menu {
+                                Button("Открыть «Пароли»") { openPasswords() }
+                                Button("Сохранить текущий ключ в Связке ключей") { saveCurrentKey() }
+                                    .disabled(key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                              keychainSaving.contains(engine))
+                                Button("Привязать существующую запись…") { openKeychainSettings() }
+                            } label: { Label("Пароли и ключи", systemImage: "key") }
+                            if let message = keychainMessage[engine] {
+                                Text(message).font(.caption).foregroundStyle(.secondary)
+                            }
                             TextField("Путь к " + engine.binary, text: path)
                             if engine.resolve(path.wrappedValue) == nil {
                                 Text("CLI установится при запуске.").font(.caption).foregroundStyle(.secondary)
                             }
                             HStack {
-                                Button("Выбрать папку…") { chooseFolder() }
+                                Button { chooseFolder() } label: { Label("Папка…", systemImage: "folder") }
                                 Text(folder.isEmpty ? "Папка не выбрана" : folder)
                                     .font(.caption).lineLimit(1).truncationMode(.middle).help(folder)
                             }
                         }.padding(5)
-                    }
-                    GroupBox("Запуск") {
+                    } label: { section("Подключение", icon: "key") }
+                    GroupBox {
                         VStack(alignment: .leading, spacing: 9) {
                             HStack {
                                 if engine == .gemini {
@@ -398,36 +611,44 @@ struct Panel: View {
                             }
                             Stepper("Время: \(timeout) с", value: $timeout, in: 30...900, step: 30)
                         }.padding(5)
+                    } label: { section("Запуск", icon: "slider.horizontal.3") }
+                    accessControls
                     }
-                    Spacer()
-                }.frame(width: 295).disabled(runner.working)
+                    .padding(.trailing, 8)
+                    .padding(.bottom, 8)
+                    .disabled(runner.working)
+                }.frame(width: 320)
 
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Picker("Задача", selection: $profile) {
+                        Picker("Профиль задачи", selection: $profile) {
                             ForEach(Profile.allCases, id: \.self) { Text($0.rawValue) }
-                        }.pickerStyle(.segmented)
+                        }.pickerStyle(.segmented).labelsHidden()
                         Toggle("Короткий контекст", isOn: $optimize)
                     }
+                    section("Задача", icon: "square.and.pencil")
                     TextEditor(text: $request)
-                        .font(.body).frame(minHeight: 80)
-                        .border(Color.secondary.opacity(0.25))
+                        .font(.system(size: 14)).lineSpacing(4)
+                        .scrollContentBackground(.hidden)
+                        .padding(8).frame(minHeight: 90)
+                        .background(surface, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.20)))
                         .accessibilityLabel("Задача")
                     TextField("Файлы, границы и критерий готовности", text: $scope)
                     HStack {
-                        Button("Показать промпт") { preview = true }
+                        Button { preview = true } label: { Label("Промпт", systemImage: "eye") }
                         Text("\(text.utf8.count) байт промпта").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         if runner.working {
-                            Button("Остановить") { runner.stop() }
+                            Button { runner.stop() } label: { Label("Остановить", systemImage: "stop.fill") }
                         } else {
-                            Button("Запустить") { launch(text) }
+                            Button { launch(text) } label: { Label("Запустить", systemImage: "play.fill") }
                                 .buttonStyle(.borderedProminent)
                                 .disabled([key.wrappedValue, request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
                         }
                     }
                     Divider()
-                    Text("Результат").font(.headline)
+                    section("Результат", icon: "text.alignleft")
                     if let usage = runner.usage {
                         HStack(spacing: 10) {
                             metric("Вход", usage.input_tokens)
@@ -442,26 +663,34 @@ struct Panel: View {
                     }
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(runner.response.isEmpty ? "Здесь появится ответ агента." : runner.response)
-                                .textSelection(.enabled)
+                            if runner.response.isEmpty {
+                                Text("Здесь появится ответ агента.").foregroundStyle(.secondary)
+                            } else {
+                                AgentResponseView(response: runner.response)
+                            }
                             if !runner.diagnostics.isEmpty {
                                 DisclosureGroup("Диагностика CLI", isExpanded: $showDiagnostics) {
                                     Text(runner.diagnostics).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                                 }
                             }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
                     }.frame(minHeight: 130)
+                        .background(surface, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.20)))
                 }
             }
-        }.padding(20).frame(minWidth: 820, minHeight: 610)
+        }.padding(18).frame(minWidth: 860, minHeight: 690)
+            .tint(accent)
+            .onAppear { loadKeychain(for: engine) }
             .onChange(of: engine) { value in
+                loadKeychain(for: value)
                 model = value.presets.first ?? ""
                 effort = value == .codex ? "low" : ""
                 mode = "accept-edits"
                 runner.models = []
             }
             .onChange(of: runner.status) { status in
-                showDiagnostics = status.hasPrefix("CLI завершился") || status.hasPrefix("Каталог не получен") || status.hasPrefix("Установка завершилась")
+                showDiagnostics = status.hasPrefix("Antigravity ") || status.hasPrefix("CLI завершился") || status.hasPrefix("Каталог не получен") || status.hasPrefix("Установка завершилась")
             }
             .onChange(of: runner.models) { models in
                 guard model.isEmpty, let first = models.first(where: {
@@ -469,6 +698,46 @@ struct Panel: View {
                 }) else { return }
                 model = first.name
                 effort = first.effort
+            }
+            .sheet(isPresented: $showKeychain) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Связка ключей · " + engine.rawValue).font(.headline)
+                    Text("Укажи имя службы и учётную запись существующей записи типа «Пароль приложения». При выборе движка PoruBot будет читать ключ из этой записи.")
+                    TextField("Имя службы", text: $keychainService)
+                    TextField("Учётная запись", text: $keychainAccount)
+                    HStack {
+                        if linkedEntries[engine.keyName] != nil {
+                            Button("Отвязать") { linkKeychain(nil) }
+                        }
+                        Spacer()
+                        Button("Отмена") { showKeychain = false }.keyboardShortcut(.cancelAction)
+                        Button("Подключить") {
+                            linkKeychain(KeychainEntry(
+                                service: keychainService.trimmingCharacters(in: .whitespacesAndNewlines),
+                                account: keychainAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+                            ))
+                        }.keyboardShortcut(.defaultAction)
+                            .disabled(keychainService.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                      keychainAccount.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }.padding(20).frame(width: 485)
+            }
+            .sheet(isPresented: $showCommands) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Команды Antigravity").font(.headline)
+                    Text("Один префикс на строку, например npm run test или python3 analysis.py. Правило разрешает и дополнительные аргументы после префикса.")
+                    TextEditor(text: $commandText)
+                        .font(.system(.body, design: .monospaced))
+                        .accessibilityLabel("Разрешённые команды")
+                        .border(Color.secondary.opacity(0.25))
+                    if activeCommands == nil {
+                        Text("До 20 строк. В каждой укажи команду с аргументом, без кавычек, шаблонов и операторов оболочки.")
+                            .foregroundStyle(.red)
+                    }
+                    Button("Готово") { showCommands = false }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(activeCommands == nil)
+                }.padding(20).frame(width: 500, height: 270)
             }
             .sheet(isPresented: $preview) {
                 VStack(alignment: .leading, spacing: 12) {
