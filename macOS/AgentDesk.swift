@@ -47,8 +47,37 @@ struct CodexEvent: Decodable {
 }
 
 struct Event: Decodable {
+    struct Step: Decodable {
+        var tool_name: String?
+        var step_type: String?
+    }
+    var step_update: Step?
     var result: Result?
     var event: String?
+}
+
+enum AgentActivity {
+    static func describe(_ raw: String) -> String? {
+        switch raw.lowercased() {
+        case "read", "view_file", "view_file_outline", "list_dir", "glob", "grep", "grep_search", "find_by_name":
+            return "Читаю файлы…"
+        case "edit", "write", "multiedit", "file_change", "write_to_file", "replace_file_content",
+             "multi_replace_file_content":
+            return "Обновляю файлы…"
+        case "bash", "powershell", "run_command", "command_execution", "command_status":
+            return "Выполняю команду…"
+        case "websearch", "web_search", "search_web", "webfetch", "read_url_content":
+            return "Ищу информацию…"
+        case "mcp_tool_call", "call_mcp_tool", "tool_call":
+            return "Использую инструмент…"
+        case "reasoning", "thinking", "planner_response", "user_input":
+            return "Анализирую задачу…"
+        case "agent_message", "agent_response", "text":
+            return "Готовлю ответ…"
+        default:
+            return nil
+        }
+    }
 }
 
 struct ModelChoice: Hashable {
@@ -79,6 +108,7 @@ struct ModelChoice: Hashable {
 @MainActor
 final class Runner: ObservableObject {
     @Published var working = false
+    @Published private(set) var startedAt: Date?
     @Published var status = "Готово к запуску"
     @Published var response = ""
     @Published var diagnostics = ""
@@ -141,6 +171,7 @@ final class Runner: ObservableObject {
 
         process = task
         working = true
+        startedAt = Date()
         stopMessage = nil
         response = ""
         diagnostics = ""
@@ -170,6 +201,16 @@ final class Runner: ObservableObject {
             var codexResponse = ""
             var codexUsage: Usage?
             var codexError: String?
+            var phase: String?
+
+            func report(_ next: String?) {
+                guard let next, next != phase else { return }
+                phase = next
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.process === task, self.stopMessage == nil else { return }
+                    self.status = next
+                }
+            }
 
             func accept(_ bytes: Data) {
                 let raw = String(decoding: bytes, as: UTF8.self)
@@ -178,7 +219,13 @@ final class Runner: ObservableObject {
                     if catalog.count < 100_000 { catalog += line + "\n" }
                 } else if engine == .gemini, let event = try? JSONDecoder().decode(Event.self, from: Data(line.utf8)), event.event != nil {
                     if let final = event.result { result = final }
+                    if event.event == "init" { report("Сессия запущена…") }
+                    if let step = event.step_update {
+                        report(AgentActivity.describe(step.tool_name ?? step.step_type ?? ""))
+                    }
                 } else if engine == .codex, let event = try? JSONDecoder().decode(CodexEvent.self, from: Data(line.utf8)) {
+                    if event.type == "turn.started" { report("Анализирую задачу…") }
+                    if event.type == "item.started", let item = event.item { report(AgentActivity.describe(item.type)) }
                     if event.type == "item.completed", event.item?.type == "agent_message" {
                         codexResponse = event.item?.text ?? codexResponse
                     }
@@ -190,12 +237,19 @@ final class Runner: ObservableObject {
                 } else if let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
                           let type = object["type"] as? String, engine == .claude || engine == .router {
                     if type == "result" { result = try? JSONDecoder().decode(Result.self, from: Data(line.utf8)) }
+                    if type == "system", object["subtype"] as? String == "init" { report("Сессия запущена…") }
+                    if type == "assistant", let message = object["message"] as? [String: Any],
+                       let blocks = message["content"] as? [[String: Any]] {
+                        let tool = blocks.first { $0["type"] as? String == "tool_use" }
+                        let activity = tool?["name"] as? String ?? blocks.first?["type"] as? String ?? ""
+                        report(AgentActivity.describe(activity))
+                    }
                 } else if !line.isEmpty && notes.count < 80 {
                     notes.append(String(line.prefix(1200)))
                 }
             }
 
-            while let chunk = try? reader.read(upToCount: 8192), !chunk.isEmpty {
+            while case let chunk = reader.availableData, !chunk.isEmpty {
                 pending.append(chunk)
                 while let newline = pending.firstIndex(of: 10) {
                     accept(Data(pending.prefix(upTo: newline)))
@@ -214,6 +268,7 @@ final class Runner: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.process === task else { return }
                 self.working = false
+                self.startedAt = nil
                 self.process = nil
                 if installing {
                     self.diagnostics = collected
@@ -549,7 +604,18 @@ struct Panel: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Label(runner.status, systemImage: runner.working ? "hourglass" : "terminal")
+                Group {
+                    if let start = runner.startedAt {
+                        TimelineView(.periodic(from: start, by: 1)) { context in
+                            let seconds = max(0, Int(context.date.timeIntervalSince(start)))
+                            Label(runner.status + "  ·  " + String(format: "%d:%02d", seconds / 60, seconds % 60),
+                                  systemImage: "hourglass")
+                                .monospacedDigit()
+                        }
+                    } else {
+                        Label(runner.status, systemImage: "terminal")
+                    }
+                }
                     .font(.system(.caption, design: .rounded).weight(.medium))
                     .foregroundStyle(.secondary).lineLimit(2)
                     .padding(.horizontal, 12).padding(.vertical, 7)

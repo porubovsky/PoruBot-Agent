@@ -34,7 +34,7 @@ record Engine(string Name, string Binary, string Key, string Installer, string[]
     }
 }
 
-record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideSandbox = false, string Folder = "")
+record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideSandbox = false, string Folder = "", string Theme = "system")
 {
     private static readonly string DirectoryPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PoruBot Agent");
@@ -149,7 +149,13 @@ static class Agent
             args.AddRange(r.Engine.Codex ? ["-c", $"model_reasoning_effort=\"{effort}\""] : ["--effort", effort]);
         if (r.Engine.Codex) args.Add("-");
         status($"Работает {r.Engine.Name}…");
-        return await Child(executable, args, r.Folder, payload, environment, token);
+        string? previous = null;
+        return await Child(executable, args, r.Folder, payload, environment, token, line =>
+        {
+            if (DescribeProgress(r.Engine, line) is not { } phase || phase == previous) return;
+            previous = phase;
+            status(phase);
+        });
     }
 
     private static async Task<string> Install(Engine engine, Action<string> status, CancellationToken token)
@@ -179,7 +185,7 @@ static class Agent
     }
 
     private static async Task<ProcessOutput> Child(string executable, IEnumerable<string> args, string folder,
-        string input, Dictionary<string, string> environment, CancellationToken token)
+        string input, Dictionary<string, string> environment, CancellationToken token, Action<string>? onLine = null)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -199,7 +205,16 @@ static class Agent
             catch (InvalidOperationException) { }
             catch (System.ComponentModel.Win32Exception) { }
         });
-        var stdout = process.StandardOutput.ReadToEndAsync(token);
+        var stdout = onLine is null ? process.StandardOutput.ReadToEndAsync(token) : Task.Run(async () =>
+        {
+            var output = new StringBuilder();
+            while (await process.StandardOutput.ReadLineAsync(token) is { } line)
+            {
+                output.AppendLine(line);
+                onLine(line);
+            }
+            return output.ToString();
+        }, token);
         var stderr = process.StandardError.ReadToEndAsync(token);
         try { if (input.Length > 0) await process.StandardInput.WriteAsync(input.AsMemory(), token); }
         catch (IOException) { }
@@ -211,6 +226,57 @@ static class Agent
     static string Text(JsonElement element, string name) =>
         element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
         ? value.GetString() ?? "" : "";
+
+    internal static string? DescribeProgress(Engine engine, string line)
+    {
+        if (!line.TrimStart().StartsWith('{')) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(line);
+            var root = document.RootElement;
+            if (engine.Gemini)
+            {
+                if (Text(root, "event") == "init") return "Сессия запущена…";
+                if (Text(root, "event") != "step_update" || !root.TryGetProperty("step_update", out var step)) return null;
+                var tool = Text(step, "tool_name");
+                var type = Text(step, "step_type");
+                return Activity(tool.Length > 0 ? tool : type);
+            }
+            if (engine.Codex)
+            {
+                var type = Text(root, "type");
+                if (type == "turn.started") return "Изучаю задачу…";
+                if (type == "item.started" && root.TryGetProperty("item", out var item))
+                    return Activity(Text(item, "type"));
+                return null;
+            }
+            if (Text(root, "type") == "system" && Text(root, "subtype") == "init") return "Сессия запущена…";
+            if (Text(root, "type") != "assistant" || !root.TryGetProperty("message", out var message)
+                || !message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) return null;
+            foreach (var block in content.EnumerateArray())
+            {
+                var type = Text(block, "type");
+                if (type == "tool_use" && Activity(Text(block, "name")) is { } phase) return phase;
+                if (type is "thinking" or "text") return Activity(type);
+            }
+        }
+        catch (JsonException) { }
+        return null;
+    }
+
+    private static string? Activity(string value) => value.ToLowerInvariant() switch
+    {
+        "read" or "view_file" or "view_file_outline" or "list_dir" or "glob" or "grep" or "grep_search" or "find_by_name"
+            => "Читаю файлы…",
+        "edit" or "write" or "multiedit" or "file_change" or "write_to_file" or "replace_file_content" or
+            "multi_replace_file_content" => "Обновляю файлы…",
+        "bash" or "powershell" or "run_command" or "command_execution" or "command_status" => "Выполняю команду…",
+        "websearch" or "web_search" or "search_web" or "webfetch" or "read_url_content" => "Ищу информацию…",
+        "mcp_tool_call" or "call_mcp_tool" or "tool_call" => "Использую инструмент…",
+        "reasoning" or "thinking" or "planner_response" => "Анализирую задачу…",
+        "agent_message" or "agent_response" or "text" => "Готовлю ответ…",
+        _ => null
+    };
 
     public static AgentResult Parse(Engine engine, ProcessOutput output, string key)
     {
