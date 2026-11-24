@@ -1,7 +1,7 @@
 import Foundation
 
 enum GeminiImage {
-    static let model = "gemini-3.1-flash-image"
+    static let model = "gemini-nano-banana-2.1"
 
     struct Response: Decodable {
         struct Part: Decodable {

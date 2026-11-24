@@ -3,7 +3,7 @@ using System.Text.Json;
 
 static class GeminiImage
 {
-    public const string Model = "gemini-3.1-flash-image";
+    public const string Model = "gemini-nano-banana-2.1";
     private static readonly HttpClient Http = new();
 
     public static async Task<string> Generate(string prompt, string key, string folder, CancellationToken token)

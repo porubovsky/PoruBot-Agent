@@ -767,7 +767,7 @@ struct Panel: View {
                         Toggle("Короткий контекст", isOn: $optimize)
                         }
                     }
-                    section(imageMode ? "Описание картинки · Nano Banana 2" : "Задача", icon: imageMode ? "photo" : "square.and.pencil")
+                    section(imageMode ? "Описание картинки · Nano Banana 2.1" : "Задача", icon: imageMode ? "photo" : "square.and.pencil")
                     TextEditor(text: $request)
                         .font(.system(size: 14)).lineSpacing(4)
                         .scrollContentBackground(.hidden)

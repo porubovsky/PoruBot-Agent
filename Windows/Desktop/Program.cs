@@ -183,7 +183,7 @@ sealed class AgentWindow : Form
         preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), "Промпт");
         profile.SelectedIndexChanged += (_, _) =>
         {
-            taskHeading.Text = ImageMode ? "Описание картинки · Nano Banana 2" : "Задача";
+            taskHeading.Text = ImageMode ? "Описание картинки · Nano Banana 2.1" : "Задача";
             compact.Enabled = !ImageMode;
             scope.Enabled = !ImageMode;
             if (ImageMode) engine.SelectedIndex = 0;
