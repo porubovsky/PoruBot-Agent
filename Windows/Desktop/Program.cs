@@ -43,6 +43,8 @@ sealed class AgentWindow : Form
     private readonly ModernSwitch sandbox = new() { Text = "Команды без песочницы" };
     private readonly ThemeChoice timeout = new(true) { AccessibleName = "Лимит задачи в секундах" };
     private readonly Button run = Button("▶  Запустить", true);
+    private readonly Button repeat = Button("↻  Повторить");
+    private (AgentRequest Request, bool Image, int Seconds)? lastRun;
     private readonly Button stop = Button("■  Остановить");
     private readonly Button catalog = Button("Загрузить модели");
     private readonly FlowLayoutPanel sidebar = new() { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
@@ -50,6 +52,7 @@ sealed class AgentWindow : Form
     private readonly Dictionary<(string, string), string> models = new();
     private Settings settings = Settings.Read();
     private CancellationTokenSource? job;
+    private CancellationTokenSource? pricing;
     private Engine? previous;
     private bool updatingAccess;
     private (string Answer, string Diagnostics)? displayed;
@@ -150,8 +153,9 @@ sealed class AgentWindow : Form
         workspace.Controls.Add(new FieldFrame(scope) { Dock = DockStyle.Fill }, 0, 3);
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill };
         var preview = Button("Промпт");
-        buttons.Controls.AddRange([run, stop, preview]);
+        buttons.Controls.AddRange([run, stop, repeat, preview]);
         stop.Visible = false;
+        repeat.Enabled = false;
         workspace.Controls.Add(buttons, 0, 4);
         workspace.Controls.Add(new Label { Text = "Результат", Font = Section, Dock = DockStyle.Fill }, 0, 5);
         metrics.Name = "muted";
@@ -194,7 +198,28 @@ sealed class AgentWindow : Form
         };
         run.Click += async (_, _) => await Submit(false);
         catalog.Click += async (_, _) => await Submit(true);
-        stop.Click += (_, _) => job?.Cancel();
+        stop.Click += (_, _) =>
+        {
+            phase = "Останавливаю…";
+            UpdateProgress();
+            stop.Enabled = false;
+            job?.Cancel();
+        };
+        repeat.Click += async (_, _) =>
+        {
+            if (job is not null || lastRun is not { } previous) return;
+            var old = previous.Request.Access;
+            if ((old.AllCommands && !settings.AllCommands) || (old.AllFolders && !settings.AllFolders) ||
+                (old.OutsideSandbox && !settings.OutsideSandbox))
+            {
+                state.Text = "Доступ агента изменился. Запусти задачу с текущими настройками.";
+                return;
+            }
+            var provider = previous.Request.Engine;
+            var secret = (Selected == provider ? key.Text : keys.GetValueOrDefault(provider) ?? "").Trim();
+            if (secret.Length == 0) { state.Text = "Вставь ключ " + provider.Key + "."; return; }
+            await Execute(previous.Request with { Key = secret }, previous.Image, previous.Seconds);
+        };
         preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), "Промпт");
         profile.SelectedIndexChanged += (_, _) =>
         {
@@ -433,8 +458,19 @@ sealed class AgentWindow : Form
             if (!catalogOnly) { state.Text = "Укажи лимит от 30 до 900 секунд."; return; }
             seconds = 90;
         }
+        if (!catalogOnly)
+            lastRun = (request with { Key = "", Models = new Dictionary<(string, string), string>(models) }, imageRequest, seconds);
+        await Execute(request, imageRequest, seconds);
+    }
+
+    private async Task Execute(AgentRequest request, bool imageRequest, int seconds)
+    {
+        var provider = request.Engine;
+        var secret = request.Key;
+        bool catalogOnly = request.Catalog;
         var current = new CancellationTokenSource(TimeSpan.FromSeconds(catalogOnly ? 90 : seconds));
         job = current;
+        pricing?.Cancel();
         phase = "Запускаю CLI…";
         elapsed.Restart();
         progressTimer.Start();
@@ -442,12 +478,13 @@ sealed class AgentWindow : Form
         generatedImagePath = null;
         IProgress<string> progress = new Progress<string>(value =>
         {
-            if (!ReferenceEquals(job, current) || IsDisposed) return;
+            if (!ReferenceEquals(job, current) || IsDisposed || current.IsCancellationRequested) return;
             phase = value;
             UpdateProgress();
         });
         sidebar.Enabled = run.Enabled = sessions.Enabled = profile.Enabled = false;
-        stop.Visible = true;
+        stop.Visible = stop.Enabled = true;
+        repeat.Enabled = false;
         metrics.Text = "";
         result.Clear();
         displayed = null;
@@ -457,7 +494,7 @@ sealed class AgentWindow : Form
             {
                 phase = ImageGeneration.Name(provider) + " создаёт картинку…";
                 UpdateProgress();
-                var image = await ImageGeneration.Generate(provider, request.Prompt, secret, WorkingFolder, current.Token);
+                var image = await ImageGeneration.Generate(provider, request.Prompt, secret, request.Folder, current.Token);
                 generatedImagePath = image;
                 state.Text = "Картинка готова";
                 Render($"## Картинка готова\n{image}\n\nДвойной щелчок по результату откроет папку с файлом.", "");
@@ -467,6 +504,7 @@ sealed class AgentWindow : Form
             progressTimer.Stop();
             if (catalogOnly)
             {
+                current.Token.ThrowIfCancellationRequested();
                 if (output.Code != 0) { Render("", output.Stderr.Replace(secret, "[ключ скрыт]")); state.Text = "Каталог не загружен."; return; }
                 models.Clear();
                 foreach (var line in output.Stdout.Split('\n'))
@@ -486,8 +524,12 @@ sealed class AgentWindow : Form
             {
                 var answer = Agent.Parse(provider, output, secret);
                 metrics.Text = answer.Usage;
+                if (answer.Cost is { } cost) ShowCost("Оценка CLI", cost);
+                if (provider.Router && answer.ModelUsage.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    _ = RefreshRouterCost(answer.ModelUsage);
                 if (answer.Success && answer.SessionId is { } id) RememberSession(provider, request.Folder, id, request.Prompt, secret);
-                state.Text = answer.Success ? "Завершено" : $"Выполнение прервалось (код {output.Code}).";
+                state.Text = current.IsCancellationRequested ? "Запуск остановлен." :
+                    answer.Success ? "Завершено" : $"Выполнение прервалось (код {output.Code}).";
                 Render(answer.Answer, answer.Diagnostics);
             }
         }
@@ -499,9 +541,25 @@ sealed class AgentWindow : Form
             if (!IsDisposed) progressTimer.Stop();
             elapsed.Stop();
             current.Dispose();
-            if (!IsDisposed) { sidebar.Enabled = run.Enabled = profile.Enabled = true; stop.Visible = false; RefreshSessions(); }
+            if (!IsDisposed) { sidebar.Enabled = run.Enabled = profile.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
         }
     }
+
+    private async Task RefreshRouterCost(System.Text.Json.JsonElement usage)
+    {
+        using var lookup = new CancellationTokenSource();
+        pricing = lookup;
+        try
+        {
+            var cost = await Agent.EstimateRouter(usage, lookup.Token);
+            if (!IsDisposed && !lookup.IsCancellationRequested && cost is { } amount)
+                ShowCost("По тарифам OpenRouter", amount);
+        }
+        finally { if (ReferenceEquals(pricing, lookup)) pricing = null; }
+    }
+
+    private void ShowCost(string source, double amount) =>
+        metrics.Text += $"    {source} ≈ ${amount:0.00####}";
 
     private void Render(string text, string diagnostics)
     {

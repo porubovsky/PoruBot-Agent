@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
@@ -78,7 +79,7 @@ record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideS
 
 record AgentRequest(Engine Engine, string Key, string Folder, string Model, string Effort, bool Plan,
     Settings Access, string Prompt, bool Catalog, IReadOnlyDictionary<(string, string), string> Models, string? SessionId = null);
-record AgentResult(string Answer, string Diagnostics, bool Success, string Usage, string? SessionId);
+record AgentResult(string Answer, string Diagnostics, bool Success, string Usage, string? SessionId, double? Cost, JsonElement ModelUsage);
 record ProcessOutput(int Code, string Stdout, string Stderr);
 
 static class Agent
@@ -180,6 +181,7 @@ static class Agent
             var download = await Child(Path.Combine(system, "curl.exe"),
                 ["-fsSL", "--proto", "=https", "--proto-redir", "=https", engine.Installer, "-o", filename],
                 temporary.FullName, "", [], token);
+            token.ThrowIfCancellationRequested();
             if (download.Code != 0) throw new InvalidOperationException(download.Stderr);
             status($"Устанавливаю {engine.Binary}…");
             var install = engine.Codex
@@ -188,6 +190,7 @@ static class Agent
                     temporary.FullName, "", new() { ["CODEX_NON_INTERACTIVE"] = "1" }, token)
                 : await Child(Path.Combine(system, "cmd.exe"), ["/d", "/c", filename],
                     temporary.FullName, "", [], token);
+            token.ThrowIfCancellationRequested();
             if (install.Code != 0) throw new InvalidOperationException(install.Stderr + "\n" + install.Stdout);
             return engine.Find() ?? throw new InvalidOperationException("CLI не найден после установки.");
         }
@@ -215,21 +218,22 @@ static class Agent
             catch (InvalidOperationException) { }
             catch (System.ComponentModel.Win32Exception) { }
         });
-        var stdout = onLine is null ? process.StandardOutput.ReadToEndAsync(token) : Task.Run(async () =>
+        var stdout = onLine is null ? process.StandardOutput.ReadToEndAsync() : Task.Run(async () =>
         {
             var output = new StringBuilder();
-            while (await process.StandardOutput.ReadLineAsync(token) is { } line)
+            while (await process.StandardOutput.ReadLineAsync() is { } line)
             {
                 output.AppendLine(line);
                 onLine(line);
             }
             return output.ToString();
-        }, token);
-        var stderr = process.StandardError.ReadToEndAsync(token);
+        });
+        var stderr = process.StandardError.ReadToEndAsync();
         try { if (input.Length > 0) await process.StandardInput.WriteAsync(input.AsMemory(), token); }
         catch (IOException) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         finally { try { process.StandardInput.Close(); } catch (IOException) { } }
-        await process.WaitForExitAsync(token);
+        await process.WaitForExitAsync();
         return new(process.ExitCode, await stdout, await stderr);
     }
 
@@ -288,6 +292,40 @@ static class Agent
         _ => null
     };
 
+    private static readonly HttpClient PricingClient = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+    public static async Task<double?> EstimateRouter(JsonElement usage, CancellationToken token)
+    {
+        if (usage.ValueKind != JsonValueKind.Object) return null;
+        var models = usage.EnumerateObject().ToArray();
+        if (models.Length == 0 || models.Any(model => !model.Name.Contains('/') || model.Name.Contains('~'))) return null;
+        try
+        {
+            using var response = await PricingClient.GetAsync("https://openrouter.ai/api/v1/models", token);
+            response.EnsureSuccessStatusCode();
+            using var catalog = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
+            var entries = catalog.RootElement.GetProperty("data").EnumerateArray().ToArray();
+            double total = 0;
+            foreach (var model in models)
+            {
+                var entry = entries.FirstOrDefault(entry => Text(entry, "id") == model.Name);
+                if (entry.ValueKind == JsonValueKind.Undefined || !entry.TryGetProperty("pricing", out var pricing)) return null;
+                foreach (var (field, category) in new[] { ("inputTokens", "prompt"), ("outputTokens", "completion"),
+                    ("cacheReadInputTokens", "input_cache_read"), ("cacheCreationInputTokens", "input_cache_write") })
+                {
+                    if (!model.Value.TryGetProperty(field, out var value) || !value.TryGetInt64(out var count) || count < 0) return null;
+                    if (count == 0) continue;
+                    if (!double.TryParse(Text(pricing, category), NumberStyles.Float, CultureInfo.InvariantCulture, out var rate)
+                        || !double.IsFinite(rate) || rate < 0) return null;
+                    total += count * rate;
+                }
+            }
+            return total;
+        }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException
+            or InvalidOperationException or KeyNotFoundException) { return null; }
+    }
+
     public static AgentResult Parse(Engine engine, ProcessOutput output, string key)
     {
         var answer = "";
@@ -295,6 +333,8 @@ static class Agent
         var usage = "";
         var success = false;
         string? session = null;
+        double? cost = null;
+        JsonElement modelUsage = default;
         string Redact(string value) => key.Length == 0 ? value : value.Replace(key, "[ключ скрыт]");
         var stderr = Redact(output.Stderr).Trim();
         if (stderr.Length > 0) notes.Add(stderr);
@@ -330,9 +370,20 @@ static class Agent
                 }
                 else
                 {
+                    if (type == "assistant" && row.TryGetProperty("message", out var chat) &&
+                        chat.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+                    {
+                        var partial = string.Join("\n", content.EnumerateArray()
+                            .Where(block => Text(block, "type") == "text").Select(block => Text(block, "text")));
+                        if (partial.Length > 0) answer = partial;
+                    }
                     if (type != "result") continue;
-                    answer = Text(row, "result");
+                    var final = Text(row, "result");
+                    if (final.Length > 0) answer = final;
                     success = row.TryGetProperty("is_error", out var isError) && isError.ValueKind == JsonValueKind.False;
+                    if (engine.Router && row.TryGetProperty("modelUsage", out var breakdown)) modelUsage = breakdown.Clone();
+                    if (!engine.Router && row.TryGetProperty("total_cost_usd", out var amount)
+                        && amount.ValueKind == JsonValueKind.Number && amount.TryGetDouble(out double reported)) cost = reported;
                     if (row.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array)
                         notes.AddRange(errors.EnumerateArray().Select(value => value.ToString()));
                 }
@@ -349,6 +400,6 @@ static class Agent
             }
             catch (JsonException) { notes.Add(line.Trim()); }
         }
-        return new(answer, string.Join("\n\n", notes.Distinct()), success && output.Code == 0, usage, Guid.TryParse(session, out _) ? session : null);
+        return new(answer, string.Join("\n\n", notes.Distinct()), success && output.Code == 0, usage, Guid.TryParse(session, out _) ? session : null, cost, modelUsage);
     }
 }

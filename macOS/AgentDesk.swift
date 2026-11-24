@@ -25,7 +25,54 @@ struct Usage: Decodable {
     var cache_read_input_tokens: Int?
 }
 
-struct Result: Decodable {
+private struct ModelTokenUsage: Decodable {
+    let inputTokens: Int
+    let outputTokens: Int
+    let cacheReadInputTokens: Int
+    let cacheCreationInputTokens: Int
+}
+
+private enum RouterPricing {
+    struct UsageBreakdown: Decodable {
+        let modelUsage: [String: ModelTokenUsage]?
+    }
+
+    struct Catalog: Decodable {
+        struct Model: Decodable {
+            let id: String
+            let pricing: [String: String]
+        }
+        let data: [Model]
+    }
+
+    static func estimate(_ usage: [String: ModelTokenUsage]) async -> Double? {
+        guard !usage.isEmpty, usage.keys.allSatisfy({ $0.contains("/") && !$0.contains("~") }) else { return nil }
+        let url = URL(string: "https://openrouter.ai/api/v1/models")!
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let catalog = try? JSONDecoder().decode(Catalog.self, from: data) else { return nil }
+        return total(for: usage, in: catalog)
+    }
+
+    static func total(for usage: [String: ModelTokenUsage], in catalog: Catalog) -> Double? {
+        var total = 0.0
+        for (id, tokens) in usage {
+            guard let pricing = catalog.data.first(where: { $0.id == id })?.pricing else { return nil }
+            for (category, count) in [("prompt", tokens.inputTokens), ("completion", tokens.outputTokens),
+                                      ("input_cache_read", tokens.cacheReadInputTokens),
+                                      ("input_cache_write", tokens.cacheCreationInputTokens)] {
+                guard count >= 0 else { return nil }
+                if count == 0 { continue }
+                guard let rate = pricing[category].flatMap(Double.init), rate.isFinite, rate >= 0 else { return nil }
+                total += Double(count) * rate
+            }
+        }
+        return total
+    }
+}
+
+private struct Result: Decodable {
     var is_error: Bool?
     var result: String?
     var total_cost_usd: Double?
@@ -48,7 +95,7 @@ struct CodexEvent: Decodable {
     var message: String?
 }
 
-struct Event: Decodable {
+private struct Event: Decodable {
     struct Step: Decodable {
         var tool_name: String?
         var step_type: String?
@@ -128,11 +175,14 @@ final class Runner: ObservableObject {
     @Published var diagnostics = ""
     @Published var usage: Usage?
     @Published var reportedCost: Double?
+    @Published private(set) var costFromRouter = false
+    private var pricingJob: Task<Void, Never>?
     @Published var models: [ModelChoice] = []
     @Published private(set) var finishedSession: SavedSession?
     @Published var generatedImage: URL?
     private var imageJob: Task<Void, Never>?
     private var process: Process?
+    private var processGroup: pid_t?
     private var stopMessage: String?
 
     static let executable = FileManager.default.homeDirectoryForCurrentUser
@@ -150,7 +200,9 @@ final class Runner: ObservableObject {
         response = ""
         diagnostics = ""
         usage = nil
+        pricingJob?.cancel()
         reportedCost = nil
+        costFromRouter = false
         generatedImage = nil
         status = "\(provider.name) создаёт картинку…"
         imageJob = Task {
@@ -215,13 +267,17 @@ final class Runner: ObservableObject {
         }
 
         process = task
+        let pid = task.processIdentifier
+        processGroup = getpgid(pid) == pid ? pid : nil
         working = true
         startedAt = Date()
         stopMessage = nil
         response = ""
         diagnostics = ""
         usage = nil
+        pricingJob?.cancel()
         reportedCost = nil
+        costFromRouter = false
         generatedImage = nil
         finishedSession = nil
         status = installing ? "Устанавливаю \(engine.binary)…" : prompt == nil ? "Читаю каталог CLI…" : "Запускаю агента…"
@@ -245,6 +301,8 @@ final class Runner: ObservableObject {
             var catalog = ""
             var result: Result?
             var notes: [String] = []
+            var partialResponse = ""
+            var routerUsage: [String: ModelTokenUsage]?
             var codexResponse = ""
             var codexUsage: Usage?
             var codexError: String?
@@ -286,13 +344,21 @@ final class Runner: ObservableObject {
                     }
                 } else if let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
                           let type = object["type"] as? String, engine == .claude || engine == .router {
-                    if type == "result" { result = try? JSONDecoder().decode(Result.self, from: Data(line.utf8)) }
+                    if type == "result" {
+                        let data = Data(line.utf8)
+                        result = try? JSONDecoder().decode(Result.self, from: data)
+                        if engine == .router {
+                            routerUsage = (try? JSONDecoder().decode(RouterPricing.UsageBreakdown.self, from: data))?.modelUsage
+                        }
+                    }
                     if type == "system", object["subtype"] as? String == "init" { report("Сессия запущена…") }
                     if type == "assistant", let message = object["message"] as? [String: Any],
                        let blocks = message["content"] as? [[String: Any]] {
                         let tool = blocks.first { $0["type"] as? String == "tool_use" }
                         let activity = tool?["name"] as? String ?? blocks.first?["type"] as? String ?? ""
                         report(AgentActivity.describe(activity))
+                        let fragments = blocks.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }
+                        if !fragments.isEmpty { partialResponse = fragments.joined(separator: "\n") }
                     }
                 } else if !line.isEmpty && notes.count < 80 {
                     notes.append(String(line.prefix(1200)))
@@ -311,6 +377,8 @@ final class Runner: ObservableObject {
             let code = task.terminationStatus
             let final = result
             let openAIResponse = codexResponse
+            let partial = partialResponse
+            let pricedUsage = routerUsage
             let openAIUsage = codexUsage
             let openAIError = codexError
             let log = notes.joined(separator: "\n")
@@ -321,6 +389,7 @@ final class Runner: ObservableObject {
                 self.working = false
                 self.startedAt = nil
                 self.process = nil
+                self.processGroup = nil
                 if installing {
                     self.diagnostics = collected
                     if let stopped = self.stopMessage {
@@ -343,9 +412,16 @@ final class Runner: ObservableObject {
                             : "Каталог не получен. Можно ввести модель вручную."
                     }
                 } else {
-                    self.response = engine == .codex ? openAIResponse : (final?.response ?? final?.result ?? "")
+                    self.response = engine == .codex ? openAIResponse : (final?.response ?? final?.result ?? partial)
                     self.usage = engine == .codex ? openAIUsage : final?.usage
                     self.reportedCost = engine == .claude ? final?.total_cost_usd : nil
+                    self.costFromRouter = engine == .router
+                    if engine == .router, let modelUsage = pricedUsage {
+                        self.pricingJob = Task { [weak self] in
+                            let estimate = await RouterPricing.estimate(modelUsage)
+                            if !Task.isCancelled { self?.reportedCost = estimate }
+                        }
+                    }
                     self.diagnostics = [openAIError, final?.error, final?.errors?.joined(separator: "\n"), log].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
                     if let stopMessage = self.stopMessage {
                         self.status = stopMessage
@@ -375,26 +451,30 @@ final class Runner: ObservableObject {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(timeout)) { [weak self, weak task] in
-            guard let self, let task, self.process === task, task.isRunning else { return }
+            guard let self, let task, self.process === task, self.stopMessage == nil else { return }
             self.stop(reason: "Запуск остановлен по лимиту времени.")
         }
     }
 
     func stop(reason: String = "Запуск остановлен.") {
         if let imageJob { imageJob.cancel(); return }
-        guard let process, process.isRunning else { return }
+        guard let process, stopMessage == nil else { return }
         stopMessage = reason
         status = "Останавливаю CLI…"
-        process.terminate()
+        let pid = process.processIdentifier
+        let group = processGroup
+        if let group { kill(-group, SIGTERM) }
+        else if process.isRunning { process.terminate() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak process] in
-            guard let process, process.isRunning else { return }
-            kill(process.processIdentifier, SIGKILL)
+            if let group { kill(-group, SIGKILL) }
+            else if process?.isRunning == true { kill(pid, SIGKILL) }
         }
     }
 }
 
 struct Panel: View {
     @StateObject private var runner = Runner()
+    @State private var repeatLast: (() -> Void)?
     @AppStorage("cliPath") private var cliPath = Runner.executable
     @AppStorage("folder") private var folder = ""
     @State private var engine = Engine.gemini
@@ -455,8 +535,16 @@ struct Panel: View {
         (try? JSONDecoder().decode([String: KeychainEntry].self, from: keychainEntries)) ?? [:]
     }
     private var key: Binding<String> {
-        Binding(get: { keys[engine] ?? Engine.inherited[engine.keyName] ?? "" },
-                set: { keys[engine] = $0; changedKeys.insert(engine); keychainMessage.removeValue(forKey: engine) })
+        let provider = engine
+        return Binding(
+            get: { keys[provider] ?? Engine.inherited[provider.keyName] ?? "" },
+            set: { value in
+                guard value != (keys[provider] ?? Engine.inherited[provider.keyName] ?? "") else { return }
+                keys[provider] = value
+                changedKeys.insert(provider)
+                keychainMessage.removeValue(forKey: provider)
+            }
+        )
     }
     private var path: Binding<String> {
         Binding(get: { engine == .gemini ? cliPath : (paths[engine] ?? engine.resolve("") ?? "") },
@@ -602,8 +690,16 @@ struct Panel: View {
         if prompt != nil, rememberAPIKeys, changedKeys.contains(engine) { saveCurrentKey() }
         if imageMode, prompt != nil {
             guard let provider = imageProvider else { return }
-            runner.generateImage(using: provider, prompt: request.trimmingCharacters(in: .whitespacesAndNewlines),
-                key: key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines), folder: folder, timeout: timeout)
+            let imagePrompt = request.trimmingCharacters(in: .whitespacesAndNewlines)
+            let imageFolder = folder
+            let limit = timeout
+            let chosen = engine
+            let run = {
+                runner.generateImage(using: provider, prompt: imagePrompt,
+                    key: keys[chosen] ?? Engine.inherited[chosen.keyName] ?? "", folder: imageFolder, timeout: limit)
+            }
+            repeatLast = run
+            run()
             return
         }
         let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -625,13 +721,27 @@ struct Panel: View {
         let allFolders = prompt != nil && mode != "plan" && allFoldersEnabled
         let outsideSandbox = useCommands && mode == "accept-edits" && outsideSandboxEnabled
         let preferred = (path.wrappedValue as NSString).expandingTildeInPath
-        let secret = key.wrappedValue
+        let workingFolder = folder
+        let selectedMode = mode
+        let limit = timeout
         let selectedEffort = chosen == .gemini && (exactID != nil || name.isEmpty) ? "" : effort
         let selectedModel = chosen == .gemini ? exactID ?? name : name
         let run: (String) -> Void = { executable in
-            runner.start(engine: chosen, path: executable, folder: prompt == nil ? "" : folder,
-                         key: secret, model: selectedModel, effort: selectedEffort,
-                         mode: mode, timeout: timeout, prompt: prompt, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox, sessionID: resumedID)
+            let runTask = {
+                guard (!allowAll || allowAllCommands), (!allFolders || allFoldersEnabled),
+                      (!outsideSandbox || outsideSandboxEnabled),
+                      (!useCommands || allowAll || activeCommands == commands) else {
+                    runner.status = "Доступ агента изменился. Запусти задачу с текущими настройками."
+                    return
+                }
+                runner.start(engine: chosen, path: executable, folder: prompt == nil ? "" : workingFolder,
+                             key: keys[chosen] ?? Engine.inherited[chosen.keyName] ?? "",
+                             model: selectedModel, effort: selectedEffort, mode: selectedMode, timeout: limit,
+                             prompt: prompt, commands: commands, allFolders: allFolders,
+                             outsideSandbox: outsideSandbox, sessionID: resumedID)
+            }
+            if prompt != nil { repeatLast = runTask }
+            runTask()
         }
         if let executable = chosen.resolve(preferred) {
             run(executable)
@@ -895,6 +1005,9 @@ struct Panel: View {
                         if runner.working {
                             Button { runner.stop() } label: { Label("Остановить", systemImage: "stop.fill") }
                         } else {
+                            Button { repeatLast?() } label: { Label("Повторить", systemImage: "arrow.clockwise") }
+                                .disabled(repeatLast == nil)
+                                .help("Повторно отправить последний запрос с прежними настройками. Действия агента могут повториться.")
                             Button { launch(text) } label: { Label("Запустить", systemImage: "play.fill") }
                                 .buttonStyle(.borderedProminent)
                                 .disabled((imageMode && imageProvider == nil) || [key.wrappedValue, request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
@@ -912,7 +1025,9 @@ struct Panel: View {
                         }
                     }
                     if let cost = runner.reportedCost {
-                        Text("Оценка CLI: " + cost.formatted(.currency(code: "USD"))).font(.caption)
+                        Text((runner.costFromRouter ? "По тарифам OpenRouter: ≈" : "Оценка CLI: ≈")
+                             + cost.formatted(.currency(code: "USD").precision(.fractionLength(2...6))))
+                            .font(.caption)
                     }
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
@@ -941,7 +1056,14 @@ struct Panel: View {
             }
         }.padding(18).frame(minWidth: 860, minHeight: 690)
             .tint(accent)
-            .onAppear { loadKeychain(for: engine) }
+            .task(id: engine) { @MainActor in
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                loadKeychain(for: engine)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                if keychainMessage[engine] == nil { loadKeychain(for: engine) }
+            }
             .onChange(of: key.wrappedValue) { _ in queueKeySave() }
             .onChange(of: rememberAPIKeys) { if $0 { saveCurrentKey() } else { keySaveDebounce?.cancel() } }
             .onChange(of: folder) { _ in selectedSessionID = "" }
@@ -964,7 +1086,6 @@ struct Panel: View {
             .onChange(of: imageMode) { if $0 && imageProvider == nil { engine = .gemini } }
             .onChange(of: engine) { value in
                 selectedSessionID = ""
-                loadKeychain(for: value)
                 model = value.presets.first ?? ""
                 effort = value == .codex ? "low" : ""
                 mode = "accept-edits"
