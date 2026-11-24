@@ -171,6 +171,10 @@ sealed class ThemeChoice : UserControl, IThemed
     private int selected = -1;
     private ToolStripDropDown? dropdown;
     public List<object> Items { get; } = [];
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    public Func<object, string>? DisplayLabel { get; set; }
+
+    private string LabelFor(object? item) => item is null ? "" : DisplayLabel?.Invoke(item) ?? item.ToString() ?? "";
     public event EventHandler? SelectedIndexChanged;
     public object? SelectedItem => selected >= 0 && selected < Items.Count ? Items[selected] : null;
 
@@ -204,9 +208,9 @@ sealed class ThemeChoice : UserControl, IThemed
         set
         {
             int index = value >= 0 && value < Items.Count ? value : -1;
-            bool changed = index != selected || Text != (index >= 0 ? Items[index].ToString() : "");
+            bool changed = index != selected || Text != (index >= 0 ? LabelFor(Items[index]) : "");
             selected = index;
-            Text = SelectedItem?.ToString() ?? "";
+            Text = LabelFor(SelectedItem);
             if (changed) SelectedIndexChanged?.Invoke(this, EventArgs.Empty);
         }
     }
@@ -280,7 +284,7 @@ sealed class ThemeChoice : UserControl, IThemed
             using var brush = new SolidBrush(active ? palette.Highlight : palette.Field);
             e.Graphics.FillRectangle(brush, e.Bounds);
             var rect = Rectangle.Inflate(e.Bounds, -10, 0);
-            TextRenderer.DrawText(e.Graphics, list.Items[e.Index]?.ToString(), Font, rect, palette.Ink,
+            TextRenderer.DrawText(e.Graphics, LabelFor(list.Items[e.Index]), Font, rect, palette.Ink,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
         };
         int popupWidth = Math.Max(Width, 170);

@@ -155,6 +155,9 @@ sealed class AgentWindow : Form
         sandbox.Checked = settings.OutsideSandbox;
         folder.Text = settings.Folder.Length > 0 ? settings.Folder : "Папка не выбрана";
         folder.Tag = settings.Folder;
+        engine.DisplayLabel = item => ImageMode && item is Engine provider
+            ? provider.Gemini ? "Google" : "OpenAI"
+            : item.ToString() ?? "";
         engine.Items.AddRange(Engine.All);
         engine.SelectedIndexChanged += (_, _) => ChangeEngine();
         engine.SelectedIndex = 0;
@@ -183,10 +186,13 @@ sealed class AgentWindow : Form
         preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), "Промпт");
         profile.SelectedIndexChanged += (_, _) =>
         {
-            taskHeading.Text = ImageMode ? "Описание картинки · Nano Banana 2.1" : "Задача";
             compact.Enabled = !ImageMode;
             scope.Enabled = !ImageMode;
-            if (ImageMode) engine.SelectedIndex = 0;
+            var previousEngine = Selected;
+            engine.Items.Clear();
+            engine.Items.AddRange(ImageMode ? Engine.All.Where(item => item.Gemini || item.Codex) : Engine.All);
+            var index = engine.Items.IndexOf(previousEngine);
+            engine.SelectedIndex = Math.Max(0, index);
             UpdateAccess();
         };
         result.DoubleClick += (_, _) =>
@@ -283,12 +289,14 @@ sealed class AgentWindow : Form
         effort.Items.AddRange(selected.Codex ? ["По умолчанию", "minimal", "low", "medium", "high", "xhigh"]
             : ["По умолчанию", "low", "medium", "high", "xhigh", "max"]);
         effort.SelectedIndex = selected.Gemini ? 1 : 0;
-        catalog.Visible = selected.Gemini;
         UpdateAccess();
     }
 
     private void UpdateAccess()
     {
+        catalog.Visible = Selected.Gemini && !ImageMode;
+        model.Enabled = effort.Enabled = plan.Enabled = !ImageMode;
+        taskHeading.Text = ImageMode ? "Описание картинки · " + ImageGeneration.Name(Selected) : "Задача";
         commands.Enabled = sandbox.Enabled = !ImageMode && Selected.Gemini && !plan.Checked;
         folders.Enabled = !ImageMode && !plan.Checked;
     }
@@ -339,9 +347,9 @@ sealed class AgentWindow : Form
         if (job is not null) return;
         var provider = Selected;
         bool imageRequest = ImageMode && !catalogOnly;
-        if (imageRequest && !provider.Gemini)
+        if (imageRequest && !provider.Gemini && !provider.Codex)
         {
-            state.Text = "Для картинок выбери Antigravity и ключ Gemini.";
+            state.Text = "Для картинок выбери Google или OpenAI.";
             return;
         }
         var secret = key.Text.Trim();
@@ -378,9 +386,9 @@ sealed class AgentWindow : Form
         {
             if (imageRequest)
             {
-                phase = "Nano Banana создаёт картинку…";
+                phase = ImageGeneration.Name(provider) + " создаёт картинку…";
                 UpdateProgress();
-                var image = await GeminiImage.Generate(request.Prompt, secret, WorkingFolder, current.Token);
+                var image = await ImageGeneration.Generate(provider, request.Prompt, secret, WorkingFolder, current.Token);
                 generatedImagePath = image;
                 state.Text = "Картинка готова";
                 Render($"## Картинка готова\n{image}\n\nДвойной щелчок по результату откроет папку с файлом.", "");

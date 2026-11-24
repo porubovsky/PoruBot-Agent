@@ -10,6 +10,6 @@ cp "$here/Info.plist" "$app/Contents/Info.plist"
 cp "$here/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 target="$(uname -m)-apple-macos13.0"
 swiftc -swift-version 5 -enable-bare-slash-regex -target "$target" -parse-as-library \
-  "$here/AgentDesk.swift" "$here/Providers.swift" "$here/Keychain.swift" "$here/AgentResponseView.swift" "$here/GeminiImage.swift" -o "$app/Contents/MacOS/PoruBot"
+  "$here/AgentDesk.swift" "$here/Providers.swift" "$here/Keychain.swift" "$here/AgentResponseView.swift" "$here/ImageGeneration.swift" -o "$app/Contents/MacOS/PoruBot"
 codesign --force --sign - "$app"
 codesign --verify --strict "$app"

@@ -123,7 +123,7 @@ final class Runner: ObservableObject {
     static let executable = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/bin/agy").path
 
-    func generateImage(prompt: String, key: String, folder: String, timeout: Int) {
+    func generateImage(using provider: ImageGeneration, prompt: String, key: String, folder: String, timeout: Int) {
         guard !working else { return }
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &directory), directory.boolValue else {
@@ -137,11 +137,11 @@ final class Runner: ObservableObject {
         usage = nil
         reportedCost = nil
         generatedImage = nil
-        status = "Nano Banana создаёт картинку…"
+        status = "\(provider.name) создаёт картинку…"
         imageJob = Task {
             defer { working = false; startedAt = nil; imageJob = nil }
             do {
-                generatedImage = try await GeminiImage.generate(prompt: prompt, key: key,
+                generatedImage = try await provider.generate(prompt: prompt, key: key,
                     folder: URL(fileURLWithPath: folder), timeout: timeout)
                 status = "Картинка готова"
             } catch {
@@ -375,6 +375,13 @@ struct Panel: View {
     @AppStorage("rememberAPIKeys") private var rememberAPIKeys = false
     @State private var changedKeys: Set<Engine> = []
     @State private var imageMode = false
+    private var imageProvider: ImageGeneration? {
+        switch engine {
+        case .gemini: return .google
+        case .codex: return .openAI
+        case .claude, .router: return nil
+        }
+    }
     @State private var paths: [Engine: String] = [:]
     @AppStorage("keychainEntries") private var keychainEntries = Data()
     @State private var showKeychain = false
@@ -531,7 +538,8 @@ struct Panel: View {
     private func launch(_ prompt: String?) {
         if prompt != nil, rememberAPIKeys, changedKeys.contains(engine) { saveCurrentKey() }
         if imageMode, prompt != nil {
-            runner.generateImage(prompt: request.trimmingCharacters(in: .whitespacesAndNewlines),
+            guard let provider = imageProvider else { return }
+            runner.generateImage(using: provider, prompt: request.trimmingCharacters(in: .whitespacesAndNewlines),
                 key: key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines), folder: folder, timeout: timeout)
             return
         }
@@ -654,7 +662,7 @@ struct Panel: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("PoruBot Agent").font(.custom("AvenirNext-DemiBold", size: 26, relativeTo: .title))
-                    Label(engine.rawValue, systemImage: engine.symbol)
+                    Label(imageMode ? (imageProvider?.name ?? "Картинка") : engine.rawValue, systemImage: engine.symbol)
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -683,9 +691,14 @@ struct Panel: View {
                     VStack(alignment: .leading, spacing: 12) {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 9) {
-                            Picker("Движок", selection: $engine) {
-                                ForEach(Engine.allCases, id: \.self) { Text($0.rawValue) }
-                            }.disabled(imageMode)
+                            Picker(imageMode ? "Генератор" : "Движок", selection: $engine) {
+                                if imageMode {
+                                    Text("Google").tag(Engine.gemini)
+                                    Text("OpenAI").tag(Engine.codex)
+                                } else {
+                                    ForEach(Engine.allCases, id: \.self) { Text($0.rawValue) }
+                                }
+                            }
                             SecureField(engine.keyName, text: key)
                             Toggle("Запоминать ключ при запуске", isOn: $rememberAPIKeys)
                                 .font(.caption)
@@ -746,6 +759,7 @@ struct Panel: View {
                             Stepper("Время: \(timeout) с", value: $timeout, in: 30...900, step: 30)
                         }.padding(5)
                     } label: { section("Запуск", icon: "slider.horizontal.3") }
+                    .disabled(imageMode)
                     .opacity(imageMode ? 0.65 : 1)
                     if !imageMode { accessControls }
                     }
@@ -767,7 +781,7 @@ struct Panel: View {
                         Toggle("Короткий контекст", isOn: $optimize)
                         }
                     }
-                    section(imageMode ? "Описание картинки · Nano Banana 2.1" : "Задача", icon: imageMode ? "photo" : "square.and.pencil")
+                    section(imageMode ? "Описание картинки" : "Задача", icon: imageMode ? "photo" : "square.and.pencil")
                     TextEditor(text: $request)
                         .font(.system(size: 14)).lineSpacing(4)
                         .scrollContentBackground(.hidden)
@@ -794,7 +808,7 @@ struct Panel: View {
                         } else {
                             Button { launch(text) } label: { Label("Запустить", systemImage: "play.fill") }
                                 .buttonStyle(.borderedProminent)
-                                .disabled((imageMode && engine != .gemini) || [key.wrappedValue, request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                                .disabled((imageMode && imageProvider == nil) || [key.wrappedValue, request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
                         }
                     }
                     Divider()
@@ -839,7 +853,7 @@ struct Panel: View {
         }.padding(18).frame(minWidth: 860, minHeight: 690)
             .tint(accent)
             .onAppear { loadKeychain(for: engine) }
-            .onChange(of: imageMode) { if $0 { engine = .gemini } }
+            .onChange(of: imageMode) { if $0 && imageProvider == nil { engine = .gemini } }
             .onChange(of: engine) { value in
                 loadKeychain(for: value)
                 model = value.presets.first ?? ""
