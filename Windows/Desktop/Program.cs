@@ -32,6 +32,9 @@ sealed class AgentWindow : Form
     private readonly Label state = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight };
     private readonly Label metrics = new() { AutoEllipsis = true };
     private readonly ModernSwitch plan = new() { Text = "Только план" };
+    private readonly ThemeChoice sessions = new() { AccessibleName = "Разговор", Width = 250 };
+    private bool updatingSessions;
+    private string? selectedSession;
     private readonly Label taskHeading = new() { Text = "Задача", Dock = DockStyle.Fill };
     private string? generatedImagePath;
     private readonly ModernSwitch compact = new() { Text = "Короткий контекст", Checked = true, Width = 205 };
@@ -125,7 +128,14 @@ sealed class AgentWindow : Form
         options.Controls.AddRange([profile, compact]);
         workspace.Controls.Add(options, 0, 0);
         taskHeading.Font = Section;
-        workspace.Controls.Add(taskHeading, 0, 1);
+        var taskBar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        taskHeading.Width = 180;
+        taskHeading.Height = 32;
+        taskHeading.Dock = DockStyle.None;
+        taskBar.Controls.AddRange([taskHeading, sessions]);
+        workspace.Controls.Add(taskBar, 0, 1);
+        workspace.RowStyles[1].Height = 40;
+        sessions.SelectedIndexChanged += (_, _) => SelectSession();
         workspace.Controls.Add(new FieldFrame(prompt) { Dock = DockStyle.Fill }, 0, 2);
         void SizePrompt()
         {
@@ -171,6 +181,8 @@ sealed class AgentWindow : Form
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             folder.Text = dialog.SelectedPath;
             folder.Tag = dialog.SelectedPath;
+            selectedSession = null;
+            RefreshSessions();
             SaveAccess();
         };
         saveKey.Click += (_, _) =>
@@ -273,6 +285,7 @@ sealed class AgentWindow : Form
     {
         if (previous is not null) keys[previous] = key.Text;
         var selected = Selected;
+        if (previous != selected) selectedSession = null;
         previous = selected;
         key.PlaceholderText = selected.Key;
         if (keys.TryGetValue(selected, out var value)) key.Text = value;
@@ -299,6 +312,62 @@ sealed class AgentWindow : Form
         taskHeading.Text = ImageMode ? "Описание картинки · " + ImageGeneration.Name(Selected) : "Задача";
         commands.Enabled = sandbox.Enabled = !ImageMode && Selected.Gemini && !plan.Checked;
         folders.Enabled = !ImageMode && !plan.Checked;
+        RefreshSessions();
+    }
+
+    private void RefreshSessions()
+    {
+        sessions.Visible = !ImageMode && (Selected.Gemini || Selected.Codex);
+        sessions.Enabled = job is null && Directory.Exists(WorkingFolder);
+        if (!sessions.Visible) return;
+        updatingSessions = true;
+        try
+        {
+            sessions.Items.Clear();
+            sessions.Items.Add("Новый разговор");
+            sessions.Items.AddRange((settings.Sessions ?? []).Where(item => item.Engine == Selected.Name &&
+                string.Equals(item.Folder, WorkingFolder, StringComparison.OrdinalIgnoreCase)));
+            var index = sessions.Items.FindIndex(item => item is SavedSession session && session.Id == selectedSession);
+            if (selectedSession is not null && index < 0)
+            {
+                index = sessions.Items.Count;
+                sessions.Items.Add(new SavedSession(selectedSession, Selected.Name, WorkingFolder, "Разговор по ID"));
+            }
+            sessions.Items.Add("Открыть по ID…");
+            sessions.SelectedIndex = Math.Max(0, index);
+        }
+        finally { updatingSessions = false; }
+    }
+
+    private void SelectSession()
+    {
+        if (updatingSessions) return;
+        if (sessions.SelectedItem is SavedSession item) { selectedSession = item.Id; return; }
+        if (sessions.SelectedIndex == 0) { selectedSession = null; return; }
+        using var dialog = new Form { Text = "Продолжить разговор по ID", ClientSize = new(390, 94),
+            FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false, MaximizeBox = false, Font = Font };
+        var field = new TextBox { PlaceholderText = "UUID сессии из CLI", Bounds = new(12, 14, 365, 31) };
+        var confirm = new Button { Text = "Выбрать", DialogResult = DialogResult.OK, Enabled = false,
+            Bounds = new(264, 49, 113, 32) };
+        field.TextChanged += (_, _) => confirm.Enabled = Guid.TryParse(field.Text.Trim(), out _);
+        dialog.Controls.AddRange([field, confirm]);
+        dialog.AcceptButton = confirm;
+        if (dialog.ShowDialog(this) == DialogResult.OK) selectedSession = field.Text.Trim();
+        RefreshSessions();
+    }
+
+    private void RememberSession(Engine provider, string directory, string id, string prompt, string key)
+    {
+        var all = (settings.Sessions ?? []).ToList();
+        var existing = all.FirstOrDefault(item => item.Id == id && item.Engine == provider.Name && item.Folder == directory);
+        if (existing is not null) all.Remove(existing);
+        var title = prompt.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "Разговор";
+        title = title.Replace(key, "[ключ скрыт]");
+        all.Insert(0, existing ?? new SavedSession(id, provider.Name, directory, title[..Math.Min(84, title.Length)]));
+        settings = settings with { Sessions = all.Take(200).ToArray() };
+        selectedSession = id;
+        SaveAccess();
     }
 
     private void Confirm(CheckBox option, string message)
@@ -316,7 +385,7 @@ sealed class AgentWindow : Form
 
     private void SaveAccess()
     {
-        settings = new(commands.Checked, folders.Checked, sandbox.Checked, WorkingFolder, ThemeMode);
+        settings = new(commands.Checked, folders.Checked, sandbox.Checked, WorkingFolder, ThemeMode, settings.Sessions);
         try { settings.Save(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         { state.Text = "Не удалось сохранить настройки."; }
@@ -358,7 +427,7 @@ sealed class AgentWindow : Form
         { state.Text = "Выбери рабочую папку и введи задачу."; return; }
         var selectedEffort = effort.SelectedIndex <= 0 ? "" : effort.Text;
         var request = new AgentRequest(provider, secret, WorkingFolder, model.Text.Trim(), selectedEffort,
-            plan.Checked, settings, TaskPrompt(), catalogOnly, models);
+            plan.Checked, settings, TaskPrompt(), catalogOnly, models, selectedSession);
         if (!int.TryParse(timeout.Text, out int seconds) || seconds is < 30 or > 900)
         {
             if (!catalogOnly) { state.Text = "Укажи лимит от 30 до 900 секунд."; return; }
@@ -377,7 +446,7 @@ sealed class AgentWindow : Form
             phase = value;
             UpdateProgress();
         });
-        sidebar.Enabled = run.Enabled = false;
+        sidebar.Enabled = run.Enabled = sessions.Enabled = profile.Enabled = false;
         stop.Visible = true;
         metrics.Text = "";
         result.Clear();
@@ -417,6 +486,7 @@ sealed class AgentWindow : Form
             {
                 var answer = Agent.Parse(provider, output, secret);
                 metrics.Text = answer.Usage;
+                if (answer.Success && answer.SessionId is { } id) RememberSession(provider, request.Folder, id, request.Prompt, secret);
                 state.Text = answer.Success ? "Завершено" : $"Выполнение прервалось (код {output.Code}).";
                 Render(answer.Answer, answer.Diagnostics);
             }
@@ -429,7 +499,7 @@ sealed class AgentWindow : Form
             if (!IsDisposed) progressTimer.Stop();
             elapsed.Stop();
             current.Dispose();
-            if (!IsDisposed) { sidebar.Enabled = run.Enabled = true; stop.Visible = false; }
+            if (!IsDisposed) { sidebar.Enabled = run.Enabled = profile.Enabled = true; stop.Visible = false; RefreshSessions(); }
         }
     }
 

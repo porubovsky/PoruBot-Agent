@@ -3,6 +3,8 @@ import Foundation
 enum Engine: String, CaseIterable {
     case gemini = "Antigravity", claude = "Claude Code", codex = "Codex", router = "OpenRouter"
 
+    var supportsSessions: Bool { self == .gemini || self == .codex }
+
     var symbol: String {
         switch self {
         case .gemini: return "sparkles"
@@ -105,7 +107,7 @@ enum Engine: String, CaseIterable {
         return String(decoding: data, as: UTF8.self)
     }
 
-    func arguments(model: String, effort: String, mode: String, catalog: Bool, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false) -> [String] {
+    func arguments(model: String, effort: String, mode: String, catalog: Bool, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false, sessionID: String? = nil) -> [String] {
         let selection = model.isEmpty ? [] : ["--model", model]
         let thinking = effort.isEmpty ? [] : ["--effort", effort]
         let folders = allFolders && !catalog && mode != "plan" ? ["--add-dir", "/"] : []
@@ -116,14 +118,14 @@ enum Engine: String, CaseIterable {
             return catalog ? setting + ["models"] : setting + [
                 "--input-format", "stream-json", "--output-format", "stream-json", "--disable-slash-commands",
                 sandbox ? "--sandbox" : "--sandbox=false", "--mode", mode
-            ] + folders + selection + thinking
+            ] + folders + selection + thinking + (sessionID.map { ["--conversation", $0] } ?? [])
         case .codex:
             let reasoning = effort.isEmpty ? [] : ["-c", "model_reasoning_effort=\"\(effort)\""]
             let sandbox = mode == "plan" ? "read-only" : "workspace-write"
-            return ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", sandbox,
+            return ["exec", "--json", "--skip-git-repo-check", "--sandbox", sandbox,
                     "-c", #"model_provider="openai""#,
                     "-c", #"shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]"#]
-                + folders + selection + reasoning + ["-"]
+                + folders + selection + reasoning + (sessionID.map { ["resume", $0, "-"] } ?? ["-"])
         case .claude, .router:
             let commandSettings = #"{"sandbox":{"enabled":true,"failIfUnavailable":true,"autoAllowBashIfSandboxed":true,"allowUnsandboxedCommands":false}}"#
             return ["-p", "--verbose", "--output-format", "stream-json", "--no-session-persistence",

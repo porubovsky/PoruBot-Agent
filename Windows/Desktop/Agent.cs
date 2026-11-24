@@ -34,7 +34,12 @@ record Engine(string Name, string Binary, string Key, string Installer, string[]
     }
 }
 
-record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideSandbox = false, string Folder = "", string Theme = "system")
+record SavedSession(string Id, string Engine, string Folder, string Title)
+{
+    public override string ToString() => Title;
+}
+record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideSandbox = false, string Folder = "", string Theme = "system",
+    SavedSession[]? Sessions = null)
 {
     private static readonly string DirectoryPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PoruBot Agent");
@@ -72,8 +77,8 @@ record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideS
 }
 
 record AgentRequest(Engine Engine, string Key, string Folder, string Model, string Effort, bool Plan,
-    Settings Access, string Prompt, bool Catalog, IReadOnlyDictionary<(string, string), string> Models);
-record AgentResult(string Answer, string Diagnostics, bool Success, string Usage);
+    Settings Access, string Prompt, bool Catalog, IReadOnlyDictionary<(string, string), string> Models, string? SessionId = null);
+record AgentResult(string Answer, string Diagnostics, bool Success, string Usage, string? SessionId);
 record ProcessOutput(int Code, string Stdout, string Stderr);
 
 static class Agent
@@ -122,6 +127,7 @@ static class Agent
                 args.Add("models");
                 return await Child(executable, args, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "", environment, token);
             }
+            if (r.SessionId is { } conversation) args.AddRange(["--conversation", conversation]);
             args.AddRange(["--input-format", "stream-json", "--output-format", "stream-json", "--disable-slash-commands",
                 sandbox ? "--sandbox" : "--sandbox=false", "--mode", r.Plan ? "plan" : "accept-edits"]);
             if (r.Models.TryGetValue((model, effort), out var id)) { model = id; effort = ""; }
@@ -133,7 +139,7 @@ static class Agent
         }
         else if (r.Engine.Codex)
         {
-            args.AddRange(["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox",
+            args.AddRange(["exec", "--json", "--skip-git-repo-check", "--sandbox",
                 r.Plan ? "read-only" : "workspace-write", "-c", """model_provider="openai" """.TrimEnd(),
                 "-c", """shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]"""]);
         }
@@ -147,7 +153,11 @@ static class Agent
         if (model.Length > 0) args.AddRange(["--model", model]);
         if (effort.Length > 0)
             args.AddRange(r.Engine.Codex ? ["-c", $"model_reasoning_effort=\"{effort}\""] : ["--effort", effort]);
-        if (r.Engine.Codex) args.Add("-");
+        if (r.Engine.Codex)
+        {
+            if (r.SessionId is { } thread) args.AddRange(["resume", thread]);
+            args.Add("-");
+        }
         status($"Работает {r.Engine.Name}…");
         string? previous = null;
         return await Child(executable, args, r.Folder, payload, environment, token, line =>
@@ -284,6 +294,7 @@ static class Agent
         var notes = new List<string>();
         var usage = "";
         var success = false;
+        string? session = null;
         string Redact(string value) => key.Length == 0 ? value : value.Replace(key, "[ключ скрыт]");
         var stderr = Redact(output.Stderr).Trim();
         if (stderr.Length > 0) notes.Add(stderr);
@@ -298,12 +309,15 @@ static class Agent
                 var result = row;
                 if (engine.Gemini)
                 {
+                    if (Text(row, "conversation_id") is { Length: > 0 } eventId) session = eventId;
                     if (Text(row, "event") != "result" || !row.TryGetProperty("result", out result)) continue;
+                    if (Text(result, "conversation_id") is { Length: > 0 } resultId) session = resultId;
                     answer = Text(result, "response");
                     success = Text(result, "status") == "SUCCESS";
                 }
                 else if (engine.Codex)
                 {
+                    if (type == "thread.started" && Text(row, "thread_id") is { Length: > 0 } threadId) session = threadId;
                     if (type == "item.completed" && row.TryGetProperty("item", out var item) &&
                         Text(item, "type") == "agent_message") answer = Text(item, "text");
                     if (type == "turn.completed") success = true;
@@ -335,6 +349,6 @@ static class Agent
             }
             catch (JsonException) { notes.Add(line.Trim()); }
         }
-        return new(answer, string.Join("\n\n", notes.Distinct()), success && output.Code == 0, usage);
+        return new(answer, string.Join("\n\n", notes.Distinct()), success && output.Code == 0, usage, Guid.TryParse(session, out _) ? session : null);
     }
 }

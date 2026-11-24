@@ -33,6 +33,7 @@ struct Result: Decodable {
     var status: String?
     var response: String?
     var error: String?
+    var conversation_id: String?
     var usage: Usage?
 }
 
@@ -40,6 +41,7 @@ struct CodexEvent: Decodable {
     struct Item: Decodable { var type: String; var text: String? }
     struct Failure: Decodable { var message: String? }
     var type: String
+    var thread_id: String?
     var item: Item?
     var usage: Usage?
     var error: Failure?
@@ -51,6 +53,7 @@ struct Event: Decodable {
         var tool_name: String?
         var step_type: String?
     }
+    var conversation_id: String?
     var step_update: Step?
     var result: Result?
     var event: String?
@@ -105,6 +108,17 @@ struct ModelChoice: Hashable {
     }
 }
 
+struct SavedSession: Codable, Equatable {
+    let id: String
+    let engine: String
+    let folder: String
+    let title: String
+
+    static func workspace(_ path: String) -> String {
+        URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+}
+
 @MainActor
 final class Runner: ObservableObject {
     @Published var working = false
@@ -115,6 +129,7 @@ final class Runner: ObservableObject {
     @Published var usage: Usage?
     @Published var reportedCost: Double?
     @Published var models: [ModelChoice] = []
+    @Published private(set) var finishedSession: SavedSession?
     @Published var generatedImage: URL?
     private var imageJob: Task<Void, Never>?
     private var process: Process?
@@ -166,7 +181,7 @@ final class Runner: ObservableObject {
     }
 
     func start(engine: Engine, path: String, folder: String, key: String, model: String,
-               effort: String, mode: String, timeout: Int, prompt: String?, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false) {
+               effort: String, mode: String, timeout: Int, prompt: String?, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false, sessionID: String? = nil) {
         guard !working else { return }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { status = "Вставь ключ " + engine.keyName + "."; return }
@@ -180,7 +195,7 @@ final class Runner: ObservableObject {
             task.currentDirectoryURL = URL(fileURLWithPath: folder)
         }
         task.environment = engine.environment(key: key)
-        task.arguments = engine.arguments(model: model, effort: effort, mode: mode, catalog: prompt == nil, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox)
+        task.arguments = engine.arguments(model: model, effort: effort, mode: mode, catalog: prompt == nil, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox, sessionID: sessionID)
         run(task, engine: engine, key: key, prompt: prompt, timeout: prompt == nil ? 25 : timeout)
     }
 
@@ -208,6 +223,7 @@ final class Runner: ObservableObject {
         usage = nil
         reportedCost = nil
         generatedImage = nil
+        finishedSession = nil
         status = installing ? "Устанавливаю \(engine.binary)…" : prompt == nil ? "Читаю каталог CLI…" : "Запускаю агента…"
 
         let reader = output.fileHandleForReading
@@ -232,6 +248,7 @@ final class Runner: ObservableObject {
             var codexResponse = ""
             var codexUsage: Usage?
             var codexError: String?
+            var sessionID: String?
             var phase: String?
 
             func report(_ next: String?) {
@@ -250,11 +267,13 @@ final class Runner: ObservableObject {
                     if catalog.count < 100_000 { catalog += line + "\n" }
                 } else if engine == .gemini, let event = try? JSONDecoder().decode(Event.self, from: Data(line.utf8)), event.event != nil {
                     if let final = event.result { result = final }
+                    if let id = event.result?.conversation_id ?? event.conversation_id, !id.isEmpty { sessionID = id }
                     if event.event == "init" { report("Сессия запущена…") }
                     if let step = event.step_update {
                         report(AgentActivity.describe(step.tool_name ?? step.step_type ?? ""))
                     }
                 } else if engine == .codex, let event = try? JSONDecoder().decode(CodexEvent.self, from: Data(line.utf8)) {
+                    if event.type == "thread.started", let id = event.thread_id { sessionID = id }
                     if event.type == "turn.started" { report("Анализирую задачу…") }
                     if event.type == "item.started", let item = event.item { report(AgentActivity.describe(item.type)) }
                     if event.type == "item.completed", event.item?.type == "agent_message" {
@@ -296,6 +315,7 @@ final class Runner: ObservableObject {
             let openAIError = codexError
             let log = notes.joined(separator: "\n")
             let collected = catalog
+            let completedID = sessionID
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.process === task else { return }
                 self.working = false
@@ -340,6 +360,13 @@ final class Runner: ObservableObject {
                             && diagnostic.contains("command") && diagnostic.contains("permission") {
                             self.status = "Antigravity отклонил команду"
                         } else {
+                            if code == 0 && valid, let id = completedID, UUID(uuidString: id) != nil,
+                               let directory = task.currentDirectoryURL, let prompt {
+                                let firstLine = String(prompt.split(whereSeparator: \.isNewline).first ?? "Разговор")
+                                let safeTitle = firstLine.replacingOccurrences(of: key, with: "[ключ скрыт]")
+                                self.finishedSession = SavedSession(id: id, engine: engine.rawValue,
+                                    folder: SavedSession.workspace(directory.path), title: String(safeTitle.prefix(84)))
+                            }
                             self.status = code == 0 && valid ? "Завершено" : "CLI завершился без успешного результата (код \(code))."
                         }
                     }
@@ -375,6 +402,40 @@ struct Panel: View {
     @AppStorage("rememberAPIKeys") private var rememberAPIKeys = false
     @State private var changedKeys: Set<Engine> = []
     @State private var imageMode = false
+    @AppStorage("recentAgentSessions") private var recentAgentSessions = Data()
+    @State private var selectedSessionID = ""
+    @State private var showSessionID = false
+    @State private var typedSessionID = ""
+    @State private var keySaveDebounce: Task<Void, Never>?
+    private var savedSessions: [SavedSession] {
+        (try? JSONDecoder().decode([SavedSession].self, from: recentAgentSessions)) ?? []
+    }
+    private var matchingSessions: [SavedSession] {
+        guard !folder.isEmpty else { return [] }
+        let workspace = SavedSession.workspace(folder)
+        return savedSessions.filter { $0.engine == engine.rawValue && $0.folder == workspace }
+    }
+
+    private func rememberSession(_ session: SavedSession) {
+        var all = savedSessions
+        let existing = all.first { $0.id == session.id && $0.engine == session.engine && $0.folder == session.folder }
+        all.removeAll { $0.id == session.id && $0.engine == session.engine && $0.folder == session.folder }
+        all.insert(existing ?? session, at: 0)
+        if let stored = try? JSONEncoder().encode(Array(all.prefix(200))) { recentAgentSessions = stored }
+        if engine.rawValue == session.engine && SavedSession.workspace(folder) == session.folder {
+            selectedSessionID = session.id
+        }
+    }
+
+    private func queueKeySave() {
+        keySaveDebounce?.cancel()
+        guard rememberAPIKeys, changedKeys.contains(engine) else { return }
+        let provider = engine
+        keySaveDebounce = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            if !Task.isCancelled, engine == provider { saveCurrentKey() }
+        }
+    }
     private var imageProvider: ImageGeneration? {
         switch engine {
         case .gemini: return .google
@@ -467,7 +528,9 @@ struct Panel: View {
         let entry = KeychainEntry.porubot(provider.keyName)
         keychainMessage[provider] = "Сохраняю ключ…"
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = entry.save(secret)
+            let result = entry.save(secret).flatMap {
+                entry.read().flatMap { $0 == secret ? .success(()) : .failure(.empty) }
+            }
             DispatchQueue.main.async {
                 keychainSaving.remove(provider)
                 switch result {
@@ -550,6 +613,7 @@ struct Panel: View {
         let isExactGeminiID = name.wholeMatch(of: /gemini-[a-z0-9.\-]+-(minimal|low|medium|high|xhigh|max)/) != nil
         let exactID = catalogID ?? (isExactGeminiID ? name : nil)
         let chosen = engine
+        let resumedID = !selectedSessionID.isEmpty && chosen.supportsSessions && prompt != nil ? selectedSessionID : nil
         let useCommands = chosen == .gemini && prompt != nil && mode != "plan"
         let allowAll = useCommands && allowAllCommands
         guard !useCommands || allowAll || activeCommands != nil else {
@@ -567,7 +631,7 @@ struct Panel: View {
         let run: (String) -> Void = { executable in
             runner.start(engine: chosen, path: executable, folder: prompt == nil ? "" : folder,
                          key: secret, model: selectedModel, effort: selectedEffort,
-                         mode: mode, timeout: timeout, prompt: prompt, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox)
+                         mode: mode, timeout: timeout, prompt: prompt, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox, sessionID: resumedID)
         }
         if let executable = chosen.resolve(preferred) {
             run(executable)
@@ -700,15 +764,26 @@ struct Panel: View {
                                 }
                             }
                             SecureField(engine.keyName, text: key)
-                            Toggle("Запоминать ключ при запуске", isOn: $rememberAPIKeys)
+                                .onSubmit { if rememberAPIKeys { saveCurrentKey() } }
+                            Toggle("Запоминать ключ", isOn: $rememberAPIKeys)
                                 .font(.caption)
                             Menu {
                                 Button("Открыть «Пароли»") { openPasswords() }
                                 Button("Привязать существующую запись…") { openKeychainSettings() }
                             } label: { Label("Пароли и ключи", systemImage: "key") }
-                            Button("Сохранить ключ") { saveCurrentKey() }
-                                .disabled(key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                          keychainSaving.contains(engine))
+                            HStack {
+                                if key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Button("Загрузить ключ") {
+                                        UserDefaults.standard.removeObject(forKey: autoloadSetting(engine))
+                                        keys.removeValue(forKey: engine)
+                                        changedKeys.remove(engine)
+                                        loadKeychain(for: engine)
+                                    }.disabled(keychainLoading.contains(engine))
+                                } else {
+                                    Button("Сохранить ключ") { saveCurrentKey() }
+                                        .disabled(keychainSaving.contains(engine))
+                                }
+                            }
                             if let message = keychainMessage[engine] {
                                 Text(message).font(.caption).foregroundStyle(.secondary)
                             }
@@ -780,6 +855,20 @@ struct Panel: View {
                         }.pickerStyle(.segmented).labelsHidden()
                         Toggle("Короткий контекст", isOn: $optimize)
                         }
+                    }
+                    if !imageMode && engine.supportsSessions {
+                        Menu {
+                            Button("Новый разговор") { selectedSessionID = "" }
+                            ForEach(matchingSessions, id: \.id) { session in
+                                Button(session.title) { selectedSessionID = session.id }
+                            }
+                            Button("Открыть по ID…") { typedSessionID = ""; showSessionID = true }
+                        } label: {
+                            Label(selectedSessionID.isEmpty ? "Новый разговор" :
+                                matchingSessions.first { $0.id == selectedSessionID }?.title ?? "Разговор по ID",
+                                systemImage: "bubble.left.and.bubble.right")
+                                .lineLimit(1)
+                        }.disabled(runner.working || folder.isEmpty)
                     }
                     section(imageMode ? "Описание картинки" : "Задача", icon: imageMode ? "photo" : "square.and.pencil")
                     TextEditor(text: $request)
@@ -853,8 +942,28 @@ struct Panel: View {
         }.padding(18).frame(minWidth: 860, minHeight: 690)
             .tint(accent)
             .onAppear { loadKeychain(for: engine) }
+            .onChange(of: key.wrappedValue) { _ in queueKeySave() }
+            .onChange(of: rememberAPIKeys) { if $0 { saveCurrentKey() } else { keySaveDebounce?.cancel() } }
+            .onChange(of: folder) { _ in selectedSessionID = "" }
+            .onChange(of: runner.finishedSession) { if let session = $0 { rememberSession(session) } }
+            .sheet(isPresented: $showSessionID) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Продолжить разговор по ID").font(.headline)
+                    TextField("UUID сессии из CLI", text: $typedSessionID)
+                    HStack {
+                        Button("Отмена") { showSessionID = false }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button("Выбрать") {
+                            selectedSessionID = typedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+                            showSessionID = false
+                        }.keyboardShortcut(.defaultAction)
+                        .disabled(UUID(uuidString: typedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)) == nil)
+                    }
+                }.padding(20).frame(width: 440)
+            }
             .onChange(of: imageMode) { if $0 && imageProvider == nil { engine = .gemini } }
             .onChange(of: engine) { value in
+                selectedSessionID = ""
                 loadKeychain(for: value)
                 model = value.presets.first ?? ""
                 effort = value == .codex ? "low" : ""
