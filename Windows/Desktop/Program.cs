@@ -32,6 +32,8 @@ sealed class AgentWindow : Form
     private readonly Label state = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight };
     private readonly Label metrics = new() { AutoEllipsis = true };
     private readonly ModernSwitch plan = new() { Text = "Только план" };
+    private readonly Label taskHeading = new() { Text = "Задача", Dock = DockStyle.Fill };
+    private string? generatedImagePath;
     private readonly ModernSwitch compact = new() { Text = "Короткий контекст", Checked = true, Width = 205 };
     private readonly ModernSwitch commands = new() { Text = "Все команды" };
     private readonly ModernSwitch folders = new() { Text = "Все доступные папки" };
@@ -117,12 +119,13 @@ sealed class AgentWindow : Form
             new RowStyle(SizeType.Absolute, 43), new RowStyle(SizeType.Absolute, 28),
             new RowStyle(SizeType.Absolute, 26), new RowStyle(SizeType.Percent, 100) }) workspace.RowStyles.Add(style);
         layout.Controls.Add(workspace, 1, 1);
-        profile.Items.AddRange(["Код", "Данные", "Вопрос"]);
+        profile.Items.AddRange(["Код", "Данные", "Вопрос", "Картинка"]);
         profile.SelectedIndex = 0;
         var options = new FlowLayoutPanel { Dock = DockStyle.Fill };
         options.Controls.AddRange([profile, compact]);
         workspace.Controls.Add(options, 0, 0);
-        workspace.Controls.Add(new Label { Text = "Задача", Font = Section, Dock = DockStyle.Fill }, 0, 1);
+        taskHeading.Font = Section;
+        workspace.Controls.Add(taskHeading, 0, 1);
         workspace.Controls.Add(new FieldFrame(prompt) { Dock = DockStyle.Fill }, 0, 2);
         void SizePrompt()
         {
@@ -178,6 +181,23 @@ sealed class AgentWindow : Form
         catalog.Click += async (_, _) => await Submit(true);
         stop.Click += (_, _) => job?.Cancel();
         preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), "Промпт");
+        profile.SelectedIndexChanged += (_, _) =>
+        {
+            taskHeading.Text = ImageMode ? "Описание картинки · Nano Banana 2" : "Задача";
+            compact.Enabled = !ImageMode;
+            scope.Enabled = !ImageMode;
+            if (ImageMode) engine.SelectedIndex = 0;
+            UpdateAccess();
+        };
+        result.DoubleClick += (_, _) =>
+        {
+            if (generatedImagePath is { } path && File.Exists(path))
+            {
+                var start = new System.Diagnostics.ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+                start.ArgumentList.Add("/select," + path);
+                System.Diagnostics.Process.Start(start)?.Dispose();
+            }
+        };
         progressTimer.Tick += (_, _) => UpdateProgress();
         FormClosing += (_, _) => job?.Cancel();
         FormClosed += (_, _) => progressTimer.Dispose();
@@ -188,6 +208,7 @@ sealed class AgentWindow : Form
     }
 
     private Engine Selected => (Engine)engine.SelectedItem!;
+    private bool ImageMode => profile.SelectedIndex == 3;
     private string WorkingFolder => folder.Tag as string ?? "";
 
     private static Button Button(string text, bool primary = false) => new ModernButton(text, primary);
@@ -268,8 +289,8 @@ sealed class AgentWindow : Form
 
     private void UpdateAccess()
     {
-        commands.Enabled = sandbox.Enabled = Selected.Gemini && !plan.Checked;
-        folders.Enabled = !plan.Checked;
+        commands.Enabled = sandbox.Enabled = !ImageMode && Selected.Gemini && !plan.Checked;
+        folders.Enabled = !ImageMode && !plan.Checked;
     }
 
     private void Confirm(CheckBox option, string message)
@@ -296,6 +317,7 @@ sealed class AgentWindow : Form
     private string TaskPrompt()
     {
         string task = prompt.Text.Trim();
+        if (ImageMode) return task;
         if (scope.Text.Trim().Length > 0) task += "\n\nГраницы задачи и критерий готовности:\n" + scope.Text.Trim();
         if (!compact.Checked) return task;
         string[] hints = [
@@ -316,6 +338,12 @@ sealed class AgentWindow : Form
     {
         if (job is not null) return;
         var provider = Selected;
+        bool imageRequest = ImageMode && !catalogOnly;
+        if (imageRequest && !provider.Gemini)
+        {
+            state.Text = "Для картинок выбери Antigravity и ключ Gemini.";
+            return;
+        }
         var secret = key.Text.Trim();
         if (secret.Length == 0) { state.Text = "Вставь ключ " + provider.Key + "."; return; }
         if (!catalogOnly && (!Directory.Exists(WorkingFolder) || prompt.Text.Trim().Length == 0))
@@ -334,6 +362,7 @@ sealed class AgentWindow : Form
         elapsed.Restart();
         progressTimer.Start();
         UpdateProgress();
+        generatedImagePath = null;
         IProgress<string> progress = new Progress<string>(value =>
         {
             if (!ReferenceEquals(job, current) || IsDisposed) return;
@@ -347,6 +376,16 @@ sealed class AgentWindow : Form
         displayed = null;
         try
         {
+            if (imageRequest)
+            {
+                phase = "Nano Banana создаёт картинку…";
+                UpdateProgress();
+                var image = await GeminiImage.Generate(request.Prompt, secret, WorkingFolder, current.Token);
+                generatedImagePath = image;
+                state.Text = "Картинка готова";
+                Render($"## Картинка готова\n{image}\n\nДвойной щелчок по результату откроет папку с файлом.", "");
+                return;
+            }
             var output = await Agent.Run(request, progress.Report, current.Token);
             progressTimer.Stop();
             if (catalogOnly)

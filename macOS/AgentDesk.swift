@@ -115,11 +115,41 @@ final class Runner: ObservableObject {
     @Published var usage: Usage?
     @Published var reportedCost: Double?
     @Published var models: [ModelChoice] = []
+    @Published var generatedImage: URL?
+    private var imageJob: Task<Void, Never>?
     private var process: Process?
     private var stopMessage: String?
 
     static let executable = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/bin/agy").path
+
+    func generateImage(prompt: String, key: String, folder: String, timeout: Int) {
+        guard !working else { return }
+        var directory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: folder, isDirectory: &directory), directory.boolValue else {
+            status = "Рабочая папка недоступна."
+            return
+        }
+        working = true
+        startedAt = Date()
+        response = ""
+        diagnostics = ""
+        usage = nil
+        reportedCost = nil
+        generatedImage = nil
+        status = "Nano Banana создаёт картинку…"
+        imageJob = Task {
+            defer { working = false; startedAt = nil; imageJob = nil }
+            do {
+                generatedImage = try await GeminiImage.generate(prompt: prompt, key: key,
+                    folder: URL(fileURLWithPath: folder), timeout: timeout)
+                status = "Картинка готова"
+            } catch {
+                status = Task.isCancelled ? "Генерация остановлена." : "Не удалось создать картинку."
+                if !Task.isCancelled { diagnostics = error.localizedDescription }
+            }
+        }
+    }
 
     func install(_ engine: Engine, finished: @escaping () -> Void) {
         guard !working else { return }
@@ -177,6 +207,7 @@ final class Runner: ObservableObject {
         diagnostics = ""
         usage = nil
         reportedCost = nil
+        generatedImage = nil
         status = installing ? "Устанавливаю \(engine.binary)…" : prompt == nil ? "Читаю каталог CLI…" : "Запускаю агента…"
 
         let reader = output.fileHandleForReading
@@ -323,6 +354,7 @@ final class Runner: ObservableObject {
     }
 
     func stop(reason: String = "Запуск остановлен.") {
+        if let imageJob { imageJob.cancel(); return }
         guard let process, process.isRunning else { return }
         stopMessage = reason
         status = "Останавливаю CLI…"
@@ -340,6 +372,9 @@ struct Panel: View {
     @AppStorage("folder") private var folder = ""
     @State private var engine = Engine.gemini
     @State private var keys: [Engine: String] = [:]
+    @AppStorage("rememberAPIKeys") private var rememberAPIKeys = false
+    @State private var changedKeys: Set<Engine> = []
+    @State private var imageMode = false
     @State private var paths: [Engine: String] = [:]
     @AppStorage("keychainEntries") private var keychainEntries = Data()
     @State private var showKeychain = false
@@ -353,7 +388,7 @@ struct Panel: View {
     }
     private var key: Binding<String> {
         Binding(get: { keys[engine] ?? Engine.inherited[engine.keyName] ?? "" },
-                set: { keys[engine] = $0; keychainMessage.removeValue(forKey: engine) })
+                set: { keys[engine] = $0; changedKeys.insert(engine); keychainMessage.removeValue(forKey: engine) })
     }
     private var path: Binding<String> {
         Binding(get: { engine == .gemini ? cliPath : (paths[engine] ?? engine.resolve("") ?? "") },
@@ -386,12 +421,18 @@ struct Panel: View {
         showKeychain = true
     }
 
+    private func autoloadSetting(_ provider: Engine) -> String {
+        "skipKeychainAutoload." + provider.keyName
+    }
+
     private func linkKeychain(_ entry: KeychainEntry?) {
+        UserDefaults.standard.set(entry == nil, forKey: autoloadSetting(engine))
         var entries = linkedEntries
         entries[engine.keyName] = entry
         guard let encoded = try? JSONEncoder().encode(entries) else { return }
         keychainEntries = encoded
         keys.removeValue(forKey: engine)
+        changedKeys.remove(engine)
         keychainMessage.removeValue(forKey: engine)
         showKeychain = false
         if entry != nil { loadKeychain(for: engine) }
@@ -424,10 +465,12 @@ struct Panel: View {
                 keychainSaving.remove(provider)
                 switch result {
                 case .success:
+                    UserDefaults.standard.removeObject(forKey: autoloadSetting(provider))
                     var entries = linkedEntries
                     entries[provider.keyName] = entry
                     if let encoded = try? JSONEncoder().encode(entries) { keychainEntries = encoded }
                     if keys[provider] == nil { keys[provider] = secret }
+                    if keys[provider] == secret { changedKeys.remove(provider) }
                     keychainMessage[provider] = "Ключ сохранён в Связке ключей"
                 case let .failure(error):
                     keychainMessage[provider] = error.message
@@ -437,22 +480,27 @@ struct Panel: View {
     }
 
     private func loadKeychain(for provider: Engine) {
-        guard keys[provider] == nil, let entry = linkedEntries[provider.keyName],
-              keychainLoading.insert(provider).inserted else { return }
+        let linked = linkedEntries[provider.keyName]
+        let entry = linked ?? KeychainEntry.porubot(provider.keyName)
+        guard !UserDefaults.standard.bool(forKey: autoloadSetting(provider)),
+              keys[provider] == nil, keychainLoading.insert(provider).inserted else { return }
         keychainMessage[provider] = "Читаю Связку ключей…"
         DispatchQueue.global(qos: .userInitiated).async {
             let result = entry.read()
             DispatchQueue.main.async {
                 keychainLoading.remove(provider)
-                guard linkedEntries[provider.keyName] == entry, keys[provider] == nil else {
+                guard !UserDefaults.standard.bool(forKey: autoloadSetting(provider)),
+                      linkedEntries[provider.keyName] == linked, keys[provider] == nil else {
                     keychainMessage.removeValue(forKey: provider)
-                    if linkedEntries[provider.keyName] != entry { loadKeychain(for: provider) }
+                    if linkedEntries[provider.keyName] != linked { loadKeychain(for: provider) }
                     return
                 }
                 switch result {
                 case let .success(secret):
                     keys[provider] = secret
                     keychainMessage[provider] = "Ключ из Связки ключей"
+                case let .failure(error) where linked == nil && error.isMissing:
+                    keychainMessage.removeValue(forKey: provider)
                 case let .failure(error):
                     keychainMessage[provider] = error.message
                 }
@@ -481,6 +529,12 @@ struct Panel: View {
     }
 
     private func launch(_ prompt: String?) {
+        if prompt != nil, rememberAPIKeys, changedKeys.contains(engine) { saveCurrentKey() }
+        if imageMode, prompt != nil {
+            runner.generateImage(prompt: request.trimmingCharacters(in: .whitespacesAndNewlines),
+                key: key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines), folder: folder, timeout: timeout)
+            return
+        }
         let name = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let catalogID = runner.models.first {
             $0.name.caseInsensitiveCompare(name) == .orderedSame && $0.effort == effort
@@ -631,15 +685,17 @@ struct Panel: View {
                         VStack(alignment: .leading, spacing: 9) {
                             Picker("Движок", selection: $engine) {
                                 ForEach(Engine.allCases, id: \.self) { Text($0.rawValue) }
-                            }
+                            }.disabled(imageMode)
                             SecureField(engine.keyName, text: key)
+                            Toggle("Запоминать ключ при запуске", isOn: $rememberAPIKeys)
+                                .font(.caption)
                             Menu {
                                 Button("Открыть «Пароли»") { openPasswords() }
-                                Button("Сохранить текущий ключ в Связке ключей") { saveCurrentKey() }
-                                    .disabled(key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                              keychainSaving.contains(engine))
                                 Button("Привязать существующую запись…") { openKeychainSettings() }
                             } label: { Label("Пароли и ключи", systemImage: "key") }
+                            Button("Сохранить ключ") { saveCurrentKey() }
+                                .disabled(key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                          keychainSaving.contains(engine))
                             if let message = keychainMessage[engine] {
                                 Text(message).font(.caption).foregroundStyle(.secondary)
                             }
@@ -690,7 +746,8 @@ struct Panel: View {
                             Stepper("Время: \(timeout) с", value: $timeout, in: 30...900, step: 30)
                         }.padding(5)
                     } label: { section("Запуск", icon: "slider.horizontal.3") }
-                    accessControls
+                    .opacity(imageMode ? 0.65 : 1)
+                    if !imageMode { accessControls }
                     }
                     .padding(.trailing, 8)
                     .padding(.bottom, 8)
@@ -699,12 +756,18 @@ struct Panel: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
+                        Picker("Режим", selection: $imageMode) {
+                            Text("Агент").tag(false)
+                            Text("Картинка").tag(true)
+                        }.pickerStyle(.segmented).labelsHidden()
+                        if !imageMode {
                         Picker("Профиль задачи", selection: $profile) {
                             ForEach(Profile.allCases, id: \.self) { Text($0.rawValue) }
                         }.pickerStyle(.segmented).labelsHidden()
                         Toggle("Короткий контекст", isOn: $optimize)
+                        }
                     }
-                    section("Задача", icon: "square.and.pencil")
+                    section(imageMode ? "Описание картинки · Nano Banana 2" : "Задача", icon: imageMode ? "photo" : "square.and.pencil")
                     TextEditor(text: $request)
                         .font(.system(size: 14)).lineSpacing(4)
                         .scrollContentBackground(.hidden)
@@ -719,17 +782,19 @@ struct Panel: View {
                         .background(surface, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.20)))
                         .accessibilityLabel("Задача")
-                    TextField("Файлы, границы и критерий готовности", text: $scope)
+                    if !imageMode { TextField("Файлы, границы и критерий готовности", text: $scope) }
                     HStack {
-                        Button { preview = true } label: { Label("Промпт", systemImage: "eye") }
-                        Text("\(text.utf8.count) байт промпта").font(.caption).foregroundStyle(.secondary)
+                        if !imageMode {
+                            Button { preview = true } label: { Label("Промпт", systemImage: "eye") }
+                            Text("\(text.utf8.count) байт промпта").font(.caption).foregroundStyle(.secondary)
+                        }
                         Spacer()
                         if runner.working {
                             Button { runner.stop() } label: { Label("Остановить", systemImage: "stop.fill") }
                         } else {
                             Button { launch(text) } label: { Label("Запустить", systemImage: "play.fill") }
                                 .buttonStyle(.borderedProminent)
-                                .disabled([key.wrappedValue, request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                                .disabled((imageMode && engine != .gemini) || [key.wrappedValue, request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
                         }
                     }
                     Divider()
@@ -748,7 +813,14 @@ struct Panel: View {
                     }
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
-                            if runner.response.isEmpty {
+                            if let url = runner.generatedImage {
+                                if let image = NSImage(contentsOf: url) {
+                                    Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 420)
+                                }
+                                Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
+                                    Label(url.lastPathComponent, systemImage: "folder")
+                                }
+                            } else if runner.response.isEmpty {
                                 Text("Здесь появится ответ агента.").foregroundStyle(.secondary)
                             } else {
                                 AgentResponseView(response: runner.response)
@@ -767,6 +839,7 @@ struct Panel: View {
         }.padding(18).frame(minWidth: 860, minHeight: 690)
             .tint(accent)
             .onAppear { loadKeychain(for: engine) }
+            .onChange(of: imageMode) { if $0 { engine = .gemini } }
             .onChange(of: engine) { value in
                 loadKeychain(for: value)
                 model = value.presets.first ?? ""
@@ -775,7 +848,7 @@ struct Panel: View {
                 runner.models = []
             }
             .onChange(of: runner.status) { status in
-                showDiagnostics = status.hasPrefix("Antigravity ") || status.hasPrefix("CLI завершился") || status.hasPrefix("Каталог не получен") || status.hasPrefix("Установка завершилась")
+                showDiagnostics = status.hasPrefix("Не удалось создать картинку") || status.hasPrefix("Antigravity ") || status.hasPrefix("CLI завершился") || status.hasPrefix("Каталог не получен") || status.hasPrefix("Установка завершилась")
             }
             .onChange(of: runner.models) { models in
                 guard model.isEmpty, let first = models.first(where: {

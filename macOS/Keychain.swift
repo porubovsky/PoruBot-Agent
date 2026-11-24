@@ -44,6 +44,11 @@ enum KeychainFailure: Error {
     case status(OSStatus)
     case empty
 
+    var isMissing: Bool {
+        if case .status(errSecItemNotFound) = self { return true }
+        return false
+    }
+
     var message: String {
         switch self {
         case .status(errSecItemNotFound): return "Запись не найдена. Проверь имя службы и учётную запись."
