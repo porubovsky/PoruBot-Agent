@@ -52,8 +52,15 @@ static class Shapes
         return path;
     }
 
+    public static void PaintBackground(PaintEventArgs e, Color color)
+    {
+        using var brush = new SolidBrush(color);
+        e.Graphics.FillRectangle(brush, e.ClipRectangle);
+    }
+
     public static void DrawBox(Graphics graphics, Rectangle rect, Color fill, Color border, int radius = 8)
     {
+        if (rect.Width <= 0 || rect.Height <= 0) return;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var outline = Round(rect, radius);
         using var brush = new SolidBrush(fill);
@@ -88,13 +95,13 @@ sealed class ModernButton : Button, IThemed
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.Clear(Parent?.BackColor ?? palette.Canvas);
+        Shapes.PaintBackground(e, Parent?.BackColor ?? palette.Canvas);
         Color bg = !Enabled ? palette.Field : primary ? palette.Accent : hover ? palette.Highlight : palette.Field;
         Color fg = !Enabled ? palette.Muted : primary ? palette.AccentText : palette.Ink;
         Shapes.DrawBox(e.Graphics, new(1, 1, Width - 3, Height - 3), bg,
             Focused ? palette.Accent : primary && Enabled ? bg : palette.Border);
         TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, fg,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.PreserveGraphicsClipping);
     }
 }
 
@@ -115,7 +122,7 @@ sealed class ModernSwitch : CheckBox, IThemed
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.Clear(Parent?.BackColor ?? palette.Card);
+        Shapes.PaintBackground(e, Parent?.BackColor ?? palette.Card);
         int x = Math.Max(0, Width - 38), y = (Height - 20) / 2;
         bool active = Checked && Enabled;
         Shapes.DrawBox(e.Graphics, new(x, y, 36, 19), active ? palette.Accent : palette.Field,
@@ -124,7 +131,7 @@ sealed class ModernSwitch : CheckBox, IThemed
         e.Graphics.FillEllipse(knob, x + (active ? 20 : 3), y + 3, 13, 13);
         TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(0, 0, Math.Max(0, x - 6), Height),
             Enabled ? palette.Ink : palette.Muted,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping);
     }
 }
 
@@ -155,7 +162,7 @@ sealed class FieldFrame : Panel, IThemed
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.Clear(Parent?.BackColor ?? palette.Canvas);
+        Shapes.PaintBackground(e, Parent?.BackColor ?? palette.Canvas);
         Shapes.DrawBox(e.Graphics, new(1, 1, Width - 3, Height - 3), palette.Field,
             ContainsFocus ? palette.Accent : palette.Border);
     }
@@ -181,7 +188,7 @@ sealed class ThemeChoice : UserControl, IThemed
     public ThemeChoice(bool editable = false)
     {
         this.editable = editable;
-        Height = 34;
+        Height = 36;
         Width = 150;
         TabStop = !editable;
         AccessibleRole = AccessibleRole.ComboBox;
@@ -230,10 +237,14 @@ sealed class ThemeChoice : UserControl, IThemed
         Invalidate();
     }
 
-    protected override void OnResize(EventArgs e)
+    protected override void OnLayout(LayoutEventArgs e)
     {
-        base.OnResize(e);
-        if (editable) input.SetBounds(10, (Height - Font.Height) / 2, Math.Max(1, Width - 37), Font.Height + 2);
+        base.OnLayout(e);
+        if (!editable) return;
+        int inset = LogicalToDeviceUnits(10);
+        int height = input.PreferredHeight;
+        input.SetBounds(inset, Math.Max(0, (Height - height) / 2),
+            Math.Max(1, Width - inset - LogicalToDeviceUnits(28)), height);
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -255,13 +266,13 @@ sealed class ThemeChoice : UserControl, IThemed
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.Clear(Parent?.BackColor ?? palette.Canvas);
+        Shapes.PaintBackground(e, Parent?.BackColor ?? palette.Canvas);
         Shapes.DrawBox(e.Graphics, new(1, 1, Width - 3, Height - 3), palette.Field,
             ContainsFocus ? palette.Accent : palette.Border);
         if (!editable)
-            TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(10, 0, Math.Max(1, Width - 39), Height),
+            TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(LogicalToDeviceUnits(10), 0, Math.Max(1, Width - LogicalToDeviceUnits(39)), Height),
                 Enabled ? palette.Ink : palette.Muted,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.PreserveGraphicsClipping);
         using var pen = new Pen(palette.Muted, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         e.Graphics.DrawLines(pen, new PointF[]
         {
@@ -285,7 +296,7 @@ sealed class ThemeChoice : UserControl, IThemed
             e.Graphics.FillRectangle(brush, e.Bounds);
             var rect = Rectangle.Inflate(e.Bounds, -10, 0);
             TextRenderer.DrawText(e.Graphics, LabelFor(list.Items[e.Index]), Font, rect, palette.Ink,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.PreserveGraphicsClipping);
         };
         int popupWidth = Math.Max(Width, 170);
         var host = new ToolStripControlHost(list)

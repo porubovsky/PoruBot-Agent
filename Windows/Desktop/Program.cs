@@ -13,7 +13,7 @@ static class Program
 sealed class AgentWindow : Form
 {
     private Palette palette = Palette.Resolve("system");
-    private static readonly Font Body = new("Segoe UI Variable Text", 11);
+    private static readonly Font Body = new("Segoe UI", 11);
     private static readonly Font Title = new("Segoe UI Semibold", 23);
     private static readonly Font Section = new("Segoe UI Semibold", 13);
     private static readonly Font Bold = new("Segoe UI", 11, FontStyle.Bold);
@@ -25,7 +25,7 @@ sealed class AgentWindow : Form
     private readonly ThemeChoice profile = new() { AccessibleName = "Профиль задачи" };
     private readonly ThemeChoice theme = new() { AccessibleName = "Цветовая тема" };
     private readonly TextBox key = new() { UseSystemPasswordChar = true };
-    private readonly TextBox prompt = new() { Multiline = true, ScrollBars = ScrollBars.Vertical };
+    private readonly TextBox prompt = new() { Multiline = true, AcceptsReturn = true };
     private readonly TextBox scope = new() { PlaceholderText = "Файлы, границы и критерий готовности" };
     private readonly RichTextBox result = new() { ReadOnly = true, DetectUrls = false, BorderStyle = BorderStyle.None };
     private readonly Label folder = new() { AutoEllipsis = true };
@@ -37,7 +37,7 @@ sealed class AgentWindow : Form
     private string? selectedSession;
     private readonly Label taskHeading = new() { Text = "Задача", Dock = DockStyle.Fill };
     private string? generatedImagePath;
-    private readonly ModernSwitch compact = new() { Text = "Короткий контекст", Checked = true, Width = 205 };
+    private readonly ModernSwitch compact = new() { Text = "Короткий контекст", Checked = true, Width = 230 };
     private readonly ModernSwitch commands = new() { Text = "Все команды" };
     private readonly ModernSwitch folders = new() { Text = "Все доступные папки" };
     private readonly ModernSwitch sandbox = new() { Text = "Команды без песочницы" };
@@ -66,17 +66,17 @@ sealed class AgentWindow : Form
     {
         Text = "PoruBot Agent";
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new(1080, 760);
+        ClientSize = new(1160, 800);
         MinimumSize = new(870, 650);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Font = Body.Name == "Segoe UI Variable Text" ? Body : new Font("Segoe UI", 11);
+        Font = Body;
         prompt.AccessibleName = "Задача";
         result.AccessibleName = "Результат";
         using (var stream = typeof(AgentWindow).Assembly.GetManifestResourceStream("PoruBot.ico"))
             if (stream is not null) Icon = new Icon(stream);
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new(16) };
-        layout.ColumnStyles.Add(new(SizeType.Absolute, 328));
+        layout.ColumnStyles.Add(new(SizeType.Absolute, 350));
         layout.ColumnStyles.Add(new(SizeType.Percent, 100));
         layout.RowStyles.Add(new(SizeType.Absolute, 81));
         layout.RowStyles.Add(new(SizeType.Percent, 100));
@@ -86,7 +86,7 @@ sealed class AgentWindow : Form
         header.ColumnStyles.Add(new(SizeType.Absolute, 44));
         header.ColumnStyles.Add(new(SizeType.Percent, 55));
         header.ColumnStyles.Add(new(SizeType.Percent, 45));
-        header.ColumnStyles.Add(new(SizeType.Absolute, 154));
+        header.ColumnStyles.Add(new(SizeType.Absolute, 176));
         var picture = new PictureBox { Image = Icon?.ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom, Dock = DockStyle.Fill };
         header.Controls.Add(picture, 0, 0);
         header.Controls.Add(new Label { Text = "PoruBot Agent", Dock = DockStyle.Fill, Font = Title, TextAlign = ContentAlignment.MiddleLeft }, 1, 0);
@@ -97,7 +97,7 @@ sealed class AgentWindow : Form
         theme.Items.AddRange(["Как в Windows", "Светлая", "Тёмная"]);
         theme.SelectedIndex = settings.Theme switch { "light" => 1, "dark" => 2, _ => 0 };
         theme.Dock = DockStyle.Top;
-        theme.Margin = new(12, 15, 0, 0);
+        theme.Margin = new(8, 15, 0, 0);
         header.Controls.Add(theme, 3, 0);
         layout.Controls.Add(header, 0, 0);
         layout.SetColumnSpan(header, 2);
@@ -120,9 +120,9 @@ sealed class AgentWindow : Form
 
         var workspace = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, Margin = new(5, 0, 0, 0) };
         foreach (var style in new[] {
-            new RowStyle(SizeType.Absolute, 43), new RowStyle(SizeType.Absolute, 28),
-            new RowStyle(SizeType.Absolute, 62), new RowStyle(SizeType.Absolute, 41),
-            new RowStyle(SizeType.Absolute, 43), new RowStyle(SizeType.Absolute, 28),
+            new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 44),
+            new RowStyle(SizeType.Absolute, 64), new RowStyle(SizeType.Absolute, 46),
+            new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 34),
             new RowStyle(SizeType.Absolute, 26), new RowStyle(SizeType.Percent, 100) }) workspace.RowStyles.Add(style);
         layout.Controls.Add(workspace, 1, 1);
         profile.Items.AddRange(["Код", "Данные", "Вопрос", "Картинка"]);
@@ -131,21 +131,25 @@ sealed class AgentWindow : Form
         options.Controls.AddRange([profile, compact]);
         workspace.Controls.Add(options, 0, 0);
         taskHeading.Font = Section;
-        var taskBar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        taskHeading.Width = 180;
-        taskHeading.Height = 32;
-        taskHeading.Dock = DockStyle.None;
-        taskBar.Controls.AddRange([taskHeading, sessions]);
+        var taskBar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        taskBar.ColumnStyles.Add(new(SizeType.Percent, 100));
+        taskBar.ColumnStyles.Add(new(SizeType.AutoSize));
+        taskHeading.TextAlign = ContentAlignment.MiddleLeft;
+        taskHeading.AutoEllipsis = true;
+        sessions.Anchor = AnchorStyles.Right;
+        taskBar.Controls.Add(taskHeading, 0, 0);
+        taskBar.Controls.Add(sessions, 1, 0);
         workspace.Controls.Add(taskBar, 0, 1);
-        workspace.RowStyles[1].Height = 40;
         sessions.SelectedIndexChanged += (_, _) => SelectSession();
         workspace.Controls.Add(new FieldFrame(prompt) { Dock = DockStyle.Fill }, 0, 2);
         void SizePrompt()
         {
-            var availableWidth = Math.Max(80, workspace.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 14);
+            int minHeight = LogicalToDeviceUnits(64);
+            int maxHeight = Math.Max(minHeight, Math.Min(LogicalToDeviceUnits(210), workspace.ClientSize.Height / 3));
+            var availableWidth = Math.Max(LogicalToDeviceUnits(80), workspace.ClientSize.Width - LogicalToDeviceUnits(26));
             int measured = TextRenderer.MeasureText(prompt.Text + "\n ", prompt.Font, new Size(availableWidth, 4096),
                 TextFormatFlags.TextBoxControl | TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height;
-            float height = Math.Clamp(measured + 12, 62, Math.Max(62, Math.Min(210, workspace.ClientSize.Height / 3)));
+            float height = Math.Clamp(measured + LogicalToDeviceUnits(22), minHeight, maxHeight);
             if (workspace.RowStyles[2].Height != height) workspace.RowStyles[2].Height = height;
         }
         prompt.TextChanged += (_, _) => SizePrompt();
@@ -157,7 +161,7 @@ sealed class AgentWindow : Form
         stop.Visible = false;
         repeat.Enabled = false;
         workspace.Controls.Add(buttons, 0, 4);
-        workspace.Controls.Add(new Label { Text = "Результат", Font = Section, Dock = DockStyle.Fill }, 0, 5);
+        workspace.Controls.Add(new Label { Text = "Результат", Font = Section, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
         metrics.Name = "muted";
         metrics.Dock = DockStyle.Fill;
         workspace.Controls.Add(metrics, 0, 6);
@@ -260,7 +264,7 @@ sealed class AgentWindow : Form
     {
         var card = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = false, Name = "card", Padding = new(13), Margin = new(0, 0, 0, 10) };
-        card.Controls.Add(new Label { Text = title, Font = Section, Name = "accent", Width = 260, Height = 30 });
+        card.Controls.Add(new Label { Text = title, Font = Section, Name = "accent", Width = 286, Height = 30 });
         return card;
     }
 
@@ -268,7 +272,7 @@ sealed class AgentWindow : Form
     {
         foreach (var control in controls)
         {
-            control.Width = 260;
+            control.Width = 286;
             control.Margin = new(0, 0, 0, 6);
             if (control is Label) control.Height = control.Text.Length > 34 ? 39 : 24;
             if (control is ModernSwitch) control.Height = 30;
@@ -342,9 +346,10 @@ sealed class AgentWindow : Form
 
     private void RefreshSessions()
     {
-        sessions.Visible = !ImageMode && (Selected.Gemini || Selected.Codex);
+        bool supportsSessions = !ImageMode && (Selected.Gemini || Selected.Codex);
+        sessions.Visible = supportsSessions;
         sessions.Enabled = job is null && Directory.Exists(WorkingFolder);
-        if (!sessions.Visible) return;
+        if (!supportsSessions) return;
         updatingSessions = true;
         try
         {
@@ -482,7 +487,7 @@ sealed class AgentWindow : Form
             phase = value;
             UpdateProgress();
         });
-        sidebar.Enabled = run.Enabled = sessions.Enabled = profile.Enabled = false;
+        sidebar.Enabled = run.Visible = sessions.Enabled = profile.Enabled = false;
         stop.Visible = stop.Enabled = true;
         repeat.Enabled = false;
         metrics.Text = "";
@@ -541,7 +546,7 @@ sealed class AgentWindow : Form
             if (!IsDisposed) progressTimer.Stop();
             elapsed.Stop();
             current.Dispose();
-            if (!IsDisposed) { sidebar.Enabled = run.Enabled = profile.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
+            if (!IsDisposed) { sidebar.Enabled = run.Visible = profile.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
         }
     }
 
