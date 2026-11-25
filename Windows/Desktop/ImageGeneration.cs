@@ -8,7 +8,7 @@ static class ImageGeneration
     public static string Name(Engine engine) => engine.Gemini ? "Nano Banana 2.1" : "GPT Image 2.6 Flare";
     private static readonly HttpClient Http = new();
 
-    public static async Task<string> Generate(Engine engine, string prompt, string key, string folder, CancellationToken token)
+    public static async Task<string> Generate(Engine engine, string prompt, string key, string folder, CancellationToken token, string? reference = null, HttpClient? client = null)
     {
         if (!engine.Gemini && !engine.Codex) throw new InvalidOperationException("Выбери Google или OpenAI.");
         using var request = new HttpRequestMessage(HttpMethod.Post, engine.Gemini
@@ -16,14 +16,31 @@ static class ImageGeneration
         if (engine.Gemini)
         {
             request.Headers.Add("x-goog-api-key", key);
-            request.Content = JsonContent.Create(new { model = GoogleModel, input = new[] { new { type = "text", text = prompt } }, store = false });
+            var input = new List<object> { new { type = "text", text = prompt } };
+            if (reference is not null)
+            {
+                var mime = Path.GetExtension(reference).ToLowerInvariant() switch
+                {
+                    ".png" => "image/png",
+                    ".jpg" or ".jpeg" => "image/jpeg",
+                    ".webp" => "image/webp",
+                    _ => throw new InvalidOperationException("Выбери образец в формате PNG, JPEG или WebP.")
+                };
+                await using var source = File.OpenRead(reference);
+                if (source.Length is <= 0 or > 10 * 1024 * 1024)
+                    throw new InvalidOperationException("Файл образца должен быть непустым и не больше 10 МБ.");
+                var sample = new byte[source.Length];
+                await source.ReadExactlyAsync(sample, token);
+                input.Add(new { type = "image", mime_type = mime, data = Convert.ToBase64String(sample) });
+            }
+            request.Content = JsonContent.Create(new { model = GoogleModel, input, store = false });
         }
         else
         {
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", key);
             request.Content = JsonContent.Create(new { model = OpenAIModel, prompt, n = 1, output_format = "png" });
         }
-        using var result = await Http.SendAsync(request, token);
+        using var result = await (client ?? Http).SendAsync(request, token);
         if (!result.IsSuccessStatusCode)
         {
             var reason = $"API: HTTP {(int)result.StatusCode}.";

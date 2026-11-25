@@ -30,7 +30,7 @@ enum ImageGeneration: Equatable {
         let output_image: Part?
     }
 
-    func generate(prompt: String, key: String, folder: URL, timeout: Int, session: URLSession = .shared) async throws -> URL {
+    func generate(prompt: String, key: String, folder: URL, timeout: Int, reference: URL? = nil, session: URLSession = .shared) async throws -> URL {
         guard !key.isEmpty else { throw Failure("Вставь API-ключ провайдера.") }
         let endpoint = self == .google ? "https://generativelanguage.googleapis.com/v1beta/interactions"
                                       : "https://api.openai.com/v1/images/generations"
@@ -40,12 +40,28 @@ enum ImageGeneration: Equatable {
         let payload: [String: Any]
         if self == .google {
             request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
-            payload = ["model": model, "input": [["type": "text", "text": prompt]], "store": false]
+            var input = [["type": "text", "text": prompt]]
+            if let reference {
+                let formats = ["png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"]
+                guard let mime = formats[reference.pathExtension.lowercased()] else {
+                    throw Failure("Выбери образец в формате PNG, JPEG или WebP.")
+                }
+                let file = try FileHandle(forReadingFrom: reference)
+                defer { try? file.close() }
+                let limit = 10 * 1024 * 1024
+                let bytes = try file.read(upToCount: limit + 1) ?? Data()
+                guard !bytes.isEmpty, bytes.count <= limit else {
+                    throw Failure("Файл образца должен быть непустым и не больше 10 МБ.")
+                }
+                input.append(["type": "image", "mime_type": mime, "data": bytes.base64EncodedString()])
+            }
+            payload = ["model": model, "input": input, "store": false]
         } else {
             request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
             payload = ["model": model, "prompt": prompt, "n": 1, "output_format": "png"]
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        try Task.checkCancellation()
         let (data, http) = try await session.data(for: request)
         try Task.checkCancellation()
         guard let status = (http as? HTTPURLResponse)?.statusCode else { throw Failure("Нет ответа от API генерации.") }

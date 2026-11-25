@@ -26,6 +26,11 @@ sealed class AgentWindow : Form
     private readonly ThemeChoice theme = new() { AccessibleName = "Цветовая тема" };
     private readonly TextBox key = new() { UseSystemPasswordChar = true };
     private readonly TextBox prompt = new() { Multiline = true, AcceptsReturn = true };
+    private string? imageReference;
+    private readonly FlowLayoutPanel referenceRow = new() { Dock = DockStyle.Fill, WrapContents = false };
+    private readonly Label referenceName = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Button chooseReference = Button("Добавить образец…");
+    private readonly Button clearReference = Button("Убрать");
     private readonly TextBox scope = new() { PlaceholderText = "Файлы, границы и критерий готовности" };
     private readonly RichTextBox result = new() { ReadOnly = true, DetectUrls = false, BorderStyle = BorderStyle.None };
     private readonly Label folder = new() { AutoEllipsis = true };
@@ -44,7 +49,7 @@ sealed class AgentWindow : Form
     private readonly ThemeChoice timeout = new(true) { AccessibleName = "Лимит задачи в секундах" };
     private readonly Button run = Button("▶  Запустить", true);
     private readonly Button repeat = Button("↻  Повторить");
-    private (AgentRequest Request, bool Image, int Seconds)? lastRun;
+    private (AgentRequest Request, bool Image, int Seconds, string? Reference)? lastRun;
     private readonly Button stop = Button("■  Остановить");
     private readonly Button catalog = Button("Загрузить модели");
     private readonly FlowLayoutPanel sidebar = new() { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
@@ -154,7 +159,21 @@ sealed class AgentWindow : Form
         }
         prompt.TextChanged += (_, _) => SizePrompt();
         workspace.Resize += (_, _) => SizePrompt();
-        workspace.Controls.Add(new FieldFrame(scope) { Dock = DockStyle.Fill }, 0, 3);
+        var scopeFrame = new FieldFrame(scope) { Dock = DockStyle.Fill };
+        var taskDetails = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+        referenceName.Size = new(200, 36);
+        referenceRow.Controls.AddRange([chooseReference, referenceName, clearReference]);
+        taskDetails.Controls.AddRange([scopeFrame, referenceRow]);
+        workspace.Controls.Add(taskDetails, 0, 3);
+        chooseReference.Click += (_, _) =>
+        {
+            using var dialog = new OpenFileDialog { Title = "Выбрать изображение-образец",
+                Filter = "Изображения PNG, JPEG, WebP|*.png;*.jpg;*.jpeg;*.webp" };
+            if (dialog.ShowDialog(this) == DialogResult.OK) SetImageReference(dialog.FileName);
+        };
+        clearReference.Click += (_, _) => SetImageReference(null);
+        SetImageReference(null);
+        referenceRow.Visible = false;
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill };
         var preview = Button("Промпт");
         buttons.Controls.AddRange([run, stop, repeat, preview]);
@@ -222,13 +241,13 @@ sealed class AgentWindow : Form
             var provider = previous.Request.Engine;
             var secret = (Selected == provider ? key.Text : keys.GetValueOrDefault(provider) ?? "").Trim();
             if (secret.Length == 0) { state.Text = "Вставь ключ " + provider.Key + "."; return; }
-            await Execute(previous.Request with { Key = secret }, previous.Image, previous.Seconds);
+            await Execute(previous.Request with { Key = secret }, previous.Image, previous.Seconds, previous.Reference);
         };
         preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), "Промпт");
         profile.SelectedIndexChanged += (_, _) =>
         {
             compact.Enabled = !ImageMode;
-            scope.Enabled = !ImageMode;
+
             var previousEngine = Selected;
             engine.Items.Clear();
             engine.Items.AddRange(ImageMode ? Engine.All.Where(item => item.Gemini || item.Codex) : Engine.All);
@@ -334,8 +353,18 @@ sealed class AgentWindow : Form
         UpdateAccess();
     }
 
+    private void SetImageReference(string? path)
+    {
+        imageReference = path;
+        referenceName.Text = path is null ? "PNG, JPEG, WebP · до 10 МБ" : Path.GetFileName(path);
+        chooseReference.Text = path is null ? "Добавить образец…" : "Заменить образец…";
+        clearReference.Visible = path is not null;
+    }
+
     private void UpdateAccess()
     {
+        scope.Parent!.Visible = !ImageMode;
+        referenceRow.Visible = ImageMode && Selected.Gemini;
         catalog.Visible = Selected.Gemini && !ImageMode;
         model.Enabled = effort.Enabled = plan.Enabled = !ImageMode;
         taskHeading.Text = ImageMode ? "Описание картинки · " + ImageGeneration.Name(Selected) : "Задача";
@@ -463,12 +492,13 @@ sealed class AgentWindow : Form
             if (!catalogOnly) { state.Text = "Укажи лимит от 30 до 900 секунд."; return; }
             seconds = 90;
         }
+        var reference = imageRequest && provider.Gemini ? imageReference : null;
         if (!catalogOnly)
-            lastRun = (request with { Key = "", Models = new Dictionary<(string, string), string>(models) }, imageRequest, seconds);
-        await Execute(request, imageRequest, seconds);
+            lastRun = (request with { Key = "", Models = new Dictionary<(string, string), string>(models) }, imageRequest, seconds, reference);
+        await Execute(request, imageRequest, seconds, reference);
     }
 
-    private async Task Execute(AgentRequest request, bool imageRequest, int seconds)
+    private async Task Execute(AgentRequest request, bool imageRequest, int seconds, string? reference)
     {
         var provider = request.Engine;
         var secret = request.Key;
@@ -489,7 +519,7 @@ sealed class AgentWindow : Form
         });
         sidebar.Enabled = run.Visible = sessions.Enabled = profile.Enabled = false;
         stop.Visible = stop.Enabled = true;
-        repeat.Enabled = false;
+        repeat.Enabled = referenceRow.Enabled = false;
         metrics.Text = "";
         result.Clear();
         displayed = null;
@@ -499,7 +529,7 @@ sealed class AgentWindow : Form
             {
                 phase = ImageGeneration.Name(provider) + " создаёт картинку…";
                 UpdateProgress();
-                var image = await ImageGeneration.Generate(provider, request.Prompt, secret, request.Folder, current.Token);
+                var image = await ImageGeneration.Generate(provider, request.Prompt, secret, request.Folder, current.Token, reference);
                 generatedImagePath = image;
                 state.Text = "Картинка готова";
                 Render($"## Картинка готова\n{image}\n\nДвойной щелчок по результату откроет папку с файлом.", "");
@@ -546,7 +576,7 @@ sealed class AgentWindow : Form
             if (!IsDisposed) progressTimer.Stop();
             elapsed.Stop();
             current.Dispose();
-            if (!IsDisposed) { sidebar.Enabled = run.Visible = profile.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
+            if (!IsDisposed) { sidebar.Enabled = run.Visible = profile.Enabled = referenceRow.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
         }
     }
 

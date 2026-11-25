@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 enum Profile: String, CaseIterable {
     case code = "Код", data = "Данные", quick = "Вопрос"
@@ -188,7 +189,7 @@ final class Runner: ObservableObject {
     static let executable = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/bin/agy").path
 
-    func generateImage(using provider: ImageGeneration, prompt: String, key: String, folder: String, timeout: Int) {
+    func generateImage(using provider: ImageGeneration, prompt: String, key: String, folder: String, timeout: Int, reference: URL?) {
         guard !working else { return }
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &directory), directory.boolValue else {
@@ -209,7 +210,7 @@ final class Runner: ObservableObject {
             defer { working = false; startedAt = nil; imageJob = nil }
             do {
                 generatedImage = try await provider.generate(prompt: prompt, key: key,
-                    folder: URL(fileURLWithPath: folder), timeout: timeout)
+                    folder: URL(fileURLWithPath: folder), timeout: timeout, reference: reference)
                 status = "Картинка готова"
             } catch {
                 status = Task.isCancelled ? "Генерация остановлена." : "Не удалось создать картинку."
@@ -482,6 +483,7 @@ struct Panel: View {
     @AppStorage("rememberAPIKeys") private var rememberAPIKeys = false
     @State private var changedKeys: Set<Engine> = []
     @State private var imageMode = false
+    @State private var imageReference: URL?
     @AppStorage("recentAgentSessions") private var recentAgentSessions = Data()
     @State private var selectedSessionID = ""
     @State private var showSessionID = false
@@ -692,11 +694,12 @@ struct Panel: View {
             guard let provider = imageProvider else { return }
             let imagePrompt = request.trimmingCharacters(in: .whitespacesAndNewlines)
             let imageFolder = folder
+            let reference = provider == .google ? imageReference : nil
             let limit = timeout
             let chosen = engine
             let run = {
                 runner.generateImage(using: provider, prompt: imagePrompt,
-                    key: keys[chosen] ?? Engine.inherited[chosen.keyName] ?? "", folder: imageFolder, timeout: limit)
+                    key: keys[chosen] ?? Engine.inherited[chosen.keyName] ?? "", folder: imageFolder, timeout: limit, reference: reference)
             }
             repeatLast = run
             run()
@@ -995,7 +998,24 @@ struct Panel: View {
                         .background(surface, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.20)))
                         .accessibilityLabel("Задача")
-                    if !imageMode { TextField("Файлы, границы и критерий готовности", text: $scope) }
+                    if !imageMode {
+                        TextField("Файлы, границы и критерий готовности", text: $scope)
+                    } else if imageProvider == .google {
+                        HStack {
+                            Button { chooseImageReference() } label: {
+                                Label(imageReference == nil ? "Добавить образец…" : "Заменить образец…", systemImage: "photo.badge.plus")
+                            }
+                            if let imageReference {
+                                Text(imageReference.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                                    .help(imageReference.lastPathComponent)
+                                Button("Убрать") { self.imageReference = nil }
+                            } else {
+                                Text("PNG, JPEG или WebP · до 10 МБ").foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .disabled(runner.working)
+                    }
                     HStack {
                         if !imageMode {
                             Button { preview = true } label: { Label("Промпт", systemImage: "eye") }
@@ -1155,6 +1175,14 @@ struct Panel: View {
             Text(label).foregroundStyle(.secondary)
             Text(value.map { $0.formatted() } ?? "—").monospacedDigit()
         }.font(.caption)
+    }
+
+    private func chooseImageReference() {
+        let dialog = NSOpenPanel()
+        dialog.allowedContentTypes = [.png, .jpeg, .webP]
+        dialog.allowsMultipleSelection = false
+        dialog.prompt = "Выбрать"
+        if dialog.runModal() == .OK { imageReference = dialog.url }
     }
 
     private func chooseFolder() {
