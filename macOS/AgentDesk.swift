@@ -3,9 +3,10 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum Profile: String, CaseIterable {
-    case code = "Код", data = "Данные", quick = "Вопрос"
+    case free = "Свободный", code = "Код", data = "Данные", quick = "Вопрос"
     var title: String {
         switch self {
+        case .free: return tr(rawValue, "Freeform")
         case .code: return tr(rawValue, "Code")
         case .data: return tr(rawValue, "Data")
         case .quick: return tr(rawValue, "Question")
@@ -13,6 +14,7 @@ enum Profile: String, CaseIterable {
     }
     var guidance: String {
         switch self {
+        case .free: return ""
         case .code:
             return tr("Начни с указанных файлов или точечного поиска. Читай только нужные фрагменты, сокращай логи. Сделай минимальное изменение и одну целевую проверку. При повторяющейся ошибке остановись и опиши блокер.", "Start with the specified files or a targeted search. Read only the relevant sections and keep logs short. Make the smallest change and run one focused check. If an error recurs, stop and explain what is blocking progress.")
         case .data:
@@ -600,14 +602,15 @@ struct Panel: View {
     }
     @State private var model = ""
     @State private var effort = ""
-    @State private var profile = Profile.code
+    @State private var profile = Profile.free
     @State private var mode = "accept-edits"
     @State private var timeout = 180
     @State private var request = ""
     @State private var requestWidth: CGFloat = 460
     @State private var scope = ""
-    @State private var optimize = true
     @State private var preview = false
+    @State private var promptDraft = ""
+    @State private var editedPrompt: String?
     @State private var showDiagnostics = false
     @State private var commandText = ""
     @State private var showCommands = false
@@ -725,11 +728,15 @@ struct Panel: View {
         return min(210, max(62, ceil(height) + 18))
     }
 
-    private var text: String {
-        let task = request.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var text: String { editedPrompt ?? generatedPrompt }
+
+    private var generatedPrompt: String {
+        if imageMode || profile == .free || request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return request
+        }
+        let task = request
         let focus = scope.trimmingCharacters(in: .whitespacesAndNewlines)
         let scoped = focus.isEmpty ? task : task + tr("\n\nГраницы задачи и условие готовности:\n", "\n\nScope and completion criteria:\n") + focus
-        guard optimize else { return scoped }
         return scoped + tr("\n\nРаботай точечно. ", "\n\nKeep the work focused. ") + profile.guidance
             + tr(" Не расширяй задачу. В конце кратко укажи результат и проверку.", " Stay within scope. Briefly summarize the result and verification.")
     }
@@ -738,7 +745,7 @@ struct Panel: View {
         if prompt != nil, !accountMode, rememberAPIKeys, changedKeys.contains(engine) { saveCurrentKey() }
         if imageMode, prompt != nil {
             guard let provider = imageProvider else { return }
-            let imagePrompt = request.trimmingCharacters(in: .whitespacesAndNewlines)
+            let imagePrompt = prompt ?? ""
             let imageFolder = folder
             let reference = imageReference
             let limit = timeout
@@ -1034,10 +1041,9 @@ struct Panel: View {
                             Text(tr("Картинка", "Image")).tag(true)
                         }.pickerStyle(.segmented).labelsHidden()
                         if !imageMode {
-                        Picker(tr("Профиль задачи", "Task profile"), selection: $profile) {
-                            ForEach(Profile.allCases, id: \.self) { Text($0.title) }
-                        }.pickerStyle(.segmented).labelsHidden()
-                        Toggle(tr("Короткий контекст", "Short context"), isOn: $optimize)
+                            Picker(tr("Режим работы", "Task mode"), selection: $profile) {
+                                ForEach(Profile.allCases, id: \.self) { Text($0.title).tag($0) }
+                            }.pickerStyle(.menu)
                         }
                     }
                     if !imageMode && engine.supportsSessions {
@@ -1069,9 +1075,9 @@ struct Panel: View {
                         .background(surface, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.20)))
                         .accessibilityLabel(tr("Задача", "Task"))
-                    if !imageMode {
+                    if !imageMode && profile != .free {
                         TextField(tr("Файлы, границы и критерий готовности", "Files, scope, and completion criteria"), text: $scope)
-                    } else if imageProvider != nil {
+                    } else if imageMode && imageProvider != nil {
                         HStack {
                             Button { chooseImageReference() } label: {
                                 Label(imageReference == nil ? tr("Добавить образец…", "Add reference…") : tr("Заменить образец…", "Replace reference…"), systemImage: "photo.badge.plus")
@@ -1088,10 +1094,13 @@ struct Panel: View {
                         .disabled(runner.working)
                     }
                     HStack {
-                        if !imageMode {
-                            Button { preview = true } label: { Label(tr("Промпт", "Prompt"), systemImage: "eye") }
-                            Text(tr("\(text.utf8.count) байт промпта", "\(text.utf8.count) prompt bytes")).font(.caption).foregroundStyle(.secondary)
-                        }
+                        Button { promptDraft = text; preview = true } label: {
+                            Label(tr("Промпт", "Prompt"), systemImage: "pencil")
+                        }.disabled(runner.working)
+                        Text(editedPrompt == nil
+                             ? tr("\(text.utf8.count) байт промпта", "\(text.utf8.count) prompt bytes")
+                             : tr("Промпт изменён", "Prompt edited"))
+                            .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         if runner.working {
                             Button { runner.stop() } label: { Label(tr("Остановить", "Stop"), systemImage: "stop.fill") }
@@ -1101,7 +1110,7 @@ struct Panel: View {
                                 .help(tr("Повторно отправить последний запрос с прежними настройками. Действия агента могут повториться.", "Send the last request again with the same settings. Agent actions may be repeated."))
                             Button { launch(text) } label: { Label(tr("Запустить", "Run"), systemImage: "play.fill") }
                                 .buttonStyle(.borderedProminent)
-                                .disabled((imageMode && imageProvider == nil) || (!accountMode && key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || [request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                                .disabled((imageMode && imageProvider == nil) || (!accountMode && key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || [text, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
                         }
                     }
                     Divider()
@@ -1281,12 +1290,26 @@ struct Panel: View {
                         .disabled(activeCommands == nil)
                 }.padding(20).frame(width: 500, height: 270)
             }
+            .onChange(of: generatedPrompt) { _ in editedPrompt = nil }
+            .onChange(of: profile) { _ in editedPrompt = nil }
+            .onChange(of: imageMode) { _ in editedPrompt = nil }
             .sheet(isPresented: $preview) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(tr("Промпт для CLI", "CLI prompt")).font(.headline)
-                    ScrollView { Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    Button(tr("Закрыть", "Close")) { preview = false }.keyboardShortcut(.cancelAction)
-                }.padding(20).frame(width: 570, height: 320)
+                    Text(tr("Текст для отправки", "Text to send")).font(.headline)
+                    TextEditor(text: $promptDraft)
+                        .font(.body)
+                        .accessibilityLabel(tr("Текст промпта", "Prompt text"))
+                        .border(Color.secondary.opacity(0.25))
+                    HStack {
+                        Button(tr("Восстановить исходный текст", "Restore original text")) { promptDraft = generatedPrompt }
+                        Spacer()
+                        Button(tr("Отмена", "Cancel")) { preview = false }.keyboardShortcut(.cancelAction)
+                        Button(tr("Применить", "Apply")) {
+                            editedPrompt = promptDraft == generatedPrompt ? nil : promptDraft
+                            preview = false
+                        }.keyboardShortcut(.defaultAction)
+                    }
+                }.padding(20).frame(minWidth: 580, minHeight: 360)
             }
     }
 

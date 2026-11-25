@@ -31,7 +31,11 @@ sealed class AgentWindow : Form
     private readonly ThemeChoice engine = new() { AccessibleName = T("Движок", "Engine") };
     private readonly ThemeChoice model = new(true) { AccessibleName = T("Модель", "Model") };
     private readonly ThemeChoice effort = new() { AccessibleName = T("Уровень Thinking", "Thinking level") };
-    private readonly ThemeChoice profile = new() { AccessibleName = T("Профиль задачи", "Task profile") };
+    private readonly ThemeChoice modeChoice = new() { AccessibleName = T("Режим", "Mode") };
+    private readonly ThemeChoice profile = new() { AccessibleName = T("Режим работы", "Task mode") };
+    private readonly Button preview = Button(T("Промпт", "Prompt"));
+    private string? editedPrompt;
+    private readonly RowStyle detailsRow = new(SizeType.Absolute, 46);
     private readonly ThemeChoice theme = new() { AccessibleName = T("Цветовая тема", "Color theme") };
     private readonly ThemeChoice signIn = new() { AccessibleName = T("Вход", "Sign-in") };
     private readonly Button accountHelp = Button(T("Как войти…", "How to sign in…"));
@@ -57,7 +61,6 @@ sealed class AgentWindow : Form
     private string? selectedSession;
     private readonly ReadableLabel taskHeading = new() { Text = T("Задача", "Task"), Dock = DockStyle.Fill };
     private string? generatedImagePath;
-    private readonly ModernSwitch compact = new() { Text = T("Короткий контекст", "Short context"), Checked = true, Width = 230 };
     private readonly ModernSwitch commands = new() { Text = T("Все команды", "All commands") };
     private readonly ModernSwitch folders = new() { Text = T("Все доступные папки", "All accessible folders") };
     private readonly ModernSwitch sandbox = new() { Text = T("Команды без песочницы", "Commands outside sandbox") };
@@ -162,15 +165,17 @@ sealed class AgentWindow : Form
         var workspace = new BufferedLayout { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 10, Margin = new(5, 0, 0, 0) };
         foreach (var style in new[] {
             new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 44),
-            new RowStyle(SizeType.Absolute, 64), new RowStyle(SizeType.Absolute, 46),
+            new RowStyle(SizeType.Absolute, 64), detailsRow,
             new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 36),
             new RowStyle(SizeType.Absolute, 0), new RowStyle(SizeType.Absolute, 34),
             new RowStyle(SizeType.Absolute, 26), new RowStyle(SizeType.Percent, 100) }) workspace.RowStyles.Add(style);
         layout.Controls.Add(workspace, 1, 1);
-        profile.Items.AddRange([T("Код", "Code"), T("Данные", "Data"), T("Вопрос", "Question"), T("Картинка", "Image")]);
+        modeChoice.Items.AddRange([T("Агент", "Agent"), T("Картинка", "Image")]);
+        modeChoice.SelectedIndex = 0;
+        profile.Items.AddRange([T("Свободный", "Freeform"), T("Код", "Code"), T("Данные", "Data"), T("Вопрос", "Question")]);
         profile.SelectedIndex = 0;
         var options = new FlowLayoutPanel { Dock = DockStyle.Fill };
-        options.Controls.AddRange([profile, compact]);
+        options.Controls.AddRange([modeChoice, profile]);
         workspace.Controls.Add(options, 0, 0);
         taskHeading.Font = Section;
         var taskBar = new BufferedLayout { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
@@ -212,7 +217,6 @@ sealed class AgentWindow : Form
         SetImageReference(null);
         referenceRow.Visible = false;
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill };
-        var preview = Button(T("Промпт", "Prompt"));
         buttons.Controls.AddRange([run, stop, repeat, preview]);
         stop.Visible = false;
         repeat.Enabled = false;
@@ -291,11 +295,13 @@ sealed class AgentWindow : Form
             if (!previous.Request.Account && secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
             await Execute(previous.Request with { Key = secret }, previous.Image, previous.Seconds, previous.Reference);
         };
-        preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), T("Промпт", "Prompt"));
-        profile.SelectedIndexChanged += (_, _) =>
+        preview.Click += (_, _) => EditPrompt();
+        prompt.TextChanged += (_, _) => SetEditedPrompt(null);
+        scope.TextChanged += (_, _) => SetEditedPrompt(null);
+        profile.SelectedIndexChanged += (_, _) => { SetEditedPrompt(null); UpdateAccess(); };
+        modeChoice.SelectedIndexChanged += (_, _) =>
         {
-            compact.Enabled = !ImageMode;
-
+            SetEditedPrompt(null);
             var previousEngine = Selected;
             engine.Items.Clear();
             engine.Items.AddRange(ImageMode ? Engine.All.Where(item => item.Gemini || item.Codex) : Engine.All);
@@ -323,7 +329,7 @@ sealed class AgentWindow : Form
 
     private Engine Selected => (Engine)engine.SelectedItem!;
     private bool AccountMode => !ImageMode && !Selected.Router && signIn.SelectedIndex == 1;
-    private bool ImageMode => profile.SelectedIndex == 3;
+    private bool ImageMode => modeChoice.SelectedIndex == 1;
     private string WorkingFolder => folder.Tag as string ?? "";
 
     private static Button Button(string text, bool primary = false) => new ModernButton(text, primary);
@@ -415,8 +421,10 @@ sealed class AgentWindow : Form
         signIn.Visible = !ImageMode && !Selected.Router;
         key.Parent!.Visible = saveKey.Visible = !AccountMode;
         accountHelp.Visible = AccountMode;
-        scope.Parent!.Visible = !ImageMode;
+        profile.Visible = !ImageMode;
+        scope.Parent!.Visible = !ImageMode && profile.SelectedIndex > 0;
         referenceRow.Visible = ImageMode;
+        detailsRow.Height = ImageMode || profile.SelectedIndex > 0 ? LogicalToDeviceUnits(46) : 0;
         catalog.Visible = Selected.Gemini && !ImageMode;
         model.Enabled = effort.Enabled = plan.Enabled = !ImageMode;
         taskHeading.Text = ImageMode ? T("Описание картинки · ", "Image prompt · ") + ImageGeneration.Name(Selected) : T("Задача", "Task");
@@ -535,18 +543,60 @@ sealed class AgentWindow : Form
         { state.Text = T("Не удалось сохранить настройки.", "Could not save settings."); }
     }
 
-    private string TaskPrompt()
+    private string TaskPrompt() => editedPrompt ?? GeneratedPrompt();
+
+    private string GeneratedPrompt()
     {
-        string task = prompt.Text.Trim();
-        if (ImageMode) return task;
+        string task = prompt.Text;
+        if (ImageMode || profile.SelectedIndex <= 0 || string.IsNullOrWhiteSpace(task)) return task;
         if (scope.Text.Trim().Length > 0) task += T("\n\nГраницы задачи и критерий готовности:\n", "\n\nScope and completion criteria:\n") + scope.Text.Trim();
-        if (!compact.Checked) return task;
         string[] hints = [
             T("Читай только нужные файлы. Сделай минимальное изменение и одну целевую проверку. Сокращай логи.", "Read only the files you need. Make the smallest change and run one focused check. Keep logs short."),
             T("Обрабатывай данные локально. Изучи схему и до пяти строк. Верни агрегаты, выводы и ограничения.", "Analyze data locally. Inspect the schema and up to five rows. Return aggregates, findings, and limitations."),
             T("Ответь кратко. Используй файлы и инструменты только при необходимости.", "Give a brief answer. Use files and tools only when needed.")
         ];
-        return task + "\n\n" + hints[profile.SelectedIndex] + T(" Не расширяй задачу.", " Stay within scope.");
+        return task + "\n\n" + hints[profile.SelectedIndex - 1] + T(" Не расширяй задачу.", " Stay within scope.");
+    }
+
+    private void SetEditedPrompt(string? text)
+    {
+        editedPrompt = text;
+        preview.Text = text is null ? T("Промпт", "Prompt") : T("Промпт изменён", "Prompt edited");
+    }
+
+    private void EditPrompt()
+    {
+        using var dialog = new Form
+        {
+            Text = T("Текст для отправки", "Text to send"), Font = Body, ClientSize = new(680, 420),
+            MinimumSize = new(480, 300), StartPosition = FormStartPosition.CenterParent,
+            BackColor = palette.Canvas, ForeColor = palette.Ink, ShowInTaskbar = false
+        };
+        var editor = new TextBox
+        {
+            Multiline = true, AcceptsReturn = true, AcceptsTab = true, ScrollBars = ScrollBars.Vertical,
+            Text = TaskPrompt(), AccessibleName = T("Текст промпта", "Prompt text")
+        };
+        var frame = new FieldFrame(editor) { Dock = DockStyle.Fill };
+        frame.Apply(palette);
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 48, FlowDirection = FlowDirection.RightToLeft };
+        var apply = Button(T("Применить", "Apply"), true);
+        var cancel = Button(T("Отмена", "Cancel"));
+        var reset = Button(T("Восстановить исходный текст", "Restore original text"));
+        apply.DialogResult = DialogResult.OK;
+        cancel.DialogResult = DialogResult.Cancel;
+        reset.Click += (_, _) => editor.Text = GeneratedPrompt();
+        foreach (var button in new[] { apply, cancel, reset })
+        {
+            ((IThemed)button).Apply(palette);
+            actions.Controls.Add(button);
+        }
+        dialog.Controls.Add(frame);
+        dialog.Controls.Add(actions);
+        dialog.CancelButton = cancel;
+        dialog.Shown += (_, _) => palette.ApplyCaption(dialog.Handle);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+            SetEditedPrompt(editor.Text == GeneratedPrompt() ? null : editor.Text);
     }
 
     private void UpdateProgress()
@@ -568,11 +618,12 @@ sealed class AgentWindow : Form
         bool account = AccountMode;
         var secret = account ? "" : key.Text.Trim();
         if (!account && secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
-        if (!catalogOnly && (!Directory.Exists(WorkingFolder) || prompt.Text.Trim().Length == 0))
+        var outgoing = TaskPrompt();
+        if (!catalogOnly && (!Directory.Exists(WorkingFolder) || string.IsNullOrWhiteSpace(outgoing)))
         { state.Text = T("Выбери рабочую папку и введи задачу.", "Choose a working folder and enter a task."); return; }
         var selectedEffort = effort.SelectedIndex <= 0 ? "" : effort.Text;
         var request = new AgentRequest(provider, secret, WorkingFolder, model.Text.Trim(), selectedEffort,
-            plan.Checked, settings, TaskPrompt(), catalogOnly, models, selectedSession, account);
+            plan.Checked, settings, outgoing, catalogOnly, models, selectedSession, account);
         if (!int.TryParse(timeout.Text, out int seconds) || seconds is < 30 or > 900)
         {
             if (!catalogOnly) { state.Text = T("Укажи лимит от 30 до 900 секунд.", "Enter a time limit between 30 and 900 seconds."); return; }
@@ -629,7 +680,7 @@ sealed class AgentWindow : Form
             if (!catalogOnly) RecordActivity(value);
             UpdateProgress();
         });
-        sidebar.Enabled = run.Visible = sessions.Enabled = profile.Enabled = false;
+        sidebar.Enabled = run.Visible = sessions.Enabled = profile.Enabled = modeChoice.Enabled = preview.Enabled = false;
         stop.Visible = stop.Enabled = true;
         repeat.Enabled = referenceRow.Enabled = false;
         metrics.Text = "";
@@ -698,7 +749,7 @@ sealed class AgentWindow : Form
             }
             elapsed.Stop();
             current.Dispose();
-            if (!IsDisposed) { sidebar.Enabled = run.Visible = profile.Enabled = referenceRow.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
+            if (!IsDisposed) { sidebar.Enabled = run.Visible = profile.Enabled = modeChoice.Enabled = preview.Enabled = referenceRow.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
         }
     }
 
