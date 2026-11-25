@@ -179,6 +179,18 @@ final class Runner: ObservableObject {
     @Published var working = false
     @Published private(set) var startedAt: Date?
     @Published var status = tr("Готово к запуску", "Ready")
+    struct ActivityEntry: Identifiable {
+        let id = UUID()
+        let elapsed: Int
+        let message: String
+    }
+    @Published private(set) var activity: [ActivityEntry] = []
+
+    private func recordActivity(_ message: String, since start: Date) {
+        guard activity.last?.message != message else { return }
+        if activity.count >= 100 { activity.removeFirst() }
+        activity.append(ActivityEntry(elapsed: max(0, Int(Date().timeIntervalSince(start))), message: message))
+    }
     @Published var response = ""
     @Published var diagnostics = ""
     @Published var usage: Usage?
@@ -204,7 +216,8 @@ final class Runner: ObservableObject {
             return
         }
         working = true
-        startedAt = Date()
+        let start = Date()
+        startedAt = start
         response = ""
         diagnostics = ""
         usage = nil
@@ -213,8 +226,15 @@ final class Runner: ObservableObject {
         costFromRouter = false
         generatedImage = nil
         status = tr("\(provider.name) создаёт картинку…", "\(provider.name) is generating an image…")
+        activity = []
+        recordActivity(status, since: start)
         imageJob = Task {
-            defer { working = false; startedAt = nil; imageJob = nil }
+            defer {
+                recordActivity(status, since: start)
+                working = false
+                startedAt = nil
+                imageJob = nil
+            }
             do {
                 generatedImage = try await provider.generate(prompt: prompt, key: key,
                     folder: URL(fileURLWithPath: folder), timeout: timeout, reference: reference)
@@ -278,7 +298,8 @@ final class Runner: ObservableObject {
         let pid = task.processIdentifier
         processGroup = getpgid(pid) == pid ? pid : nil
         working = true
-        startedAt = Date()
+        let start = Date()
+        startedAt = start
         stopMessage = nil
         response = ""
         diagnostics = ""
@@ -290,6 +311,10 @@ final class Runner: ObservableObject {
         finishedSession = nil
         status = installing ? tr("Устанавливаю \(engine.binary)…", "Installing \(engine.binary)…") : prompt == nil ? tr("Читаю каталог CLI…", "Reading the CLI catalog…") : tr("Запускаю агента…", "Starting the agent…")
 
+        if prompt != nil {
+            activity = []
+            recordActivity(status, since: start)
+        }
         let reader = output.fileHandleForReading
         let writer = input.fileHandleForWriting
         DispatchQueue.global(qos: .userInitiated).async {
@@ -323,6 +348,7 @@ final class Runner: ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.process === task, self.stopMessage == nil else { return }
                     self.status = next
+                    if prompt != nil { self.recordActivity(next, since: start) }
                 }
             }
 
@@ -454,6 +480,7 @@ final class Runner: ObservableObject {
                             self.status = code == 0 && valid ? tr("Завершено", "Done") : tr("CLI завершился без успешного результата (код \(code)).", "CLI exited without a successful result (code \(code)).")
                         }
                     }
+                    self.recordActivity(self.status, since: start)
                 }
             }
         }
@@ -484,6 +511,7 @@ struct Panel: View {
     @StateObject private var runner = Runner()
     @AppStorage(AppLanguage.preference) private var interfaceLanguage = AppLanguage.current
     @State private var languageChanged = false
+    @State private var showActivity = false
     @State private var repeatLast: (() -> Void)?
     @AppStorage("cliPath") private var cliPath = Runner.executable
     @AppStorage("folder") private var folder = ""
@@ -1077,6 +1105,32 @@ struct Panel: View {
                         }
                     }
                     Divider()
+                    DisclosureGroup(tr("Ход работы", "Activity"), isExpanded: $showActivity) {
+                        if runner.activity.isEmpty {
+                            Text(tr("Здесь появятся этапы обработки запроса.", "Progress will appear here when you run a task."))
+                                .font(.caption).foregroundStyle(.secondary).padding(.vertical, 6)
+                        } else {
+                            ScrollViewReader { proxy in
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        ForEach(runner.activity) { entry in
+                                            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                                Text(String(format: "%d:%02d", entry.elapsed / 60, entry.elapsed % 60))
+                                                    .monospacedDigit().foregroundStyle(.secondary)
+                                                Text(entry.message)
+                                            }.id(entry.id)
+                                        }
+                                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
+                                }.frame(height: 112)
+                                    .onAppear {
+                                        if let id = runner.activity.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                                    }
+                                    .onChange(of: runner.activity.last?.id) { id in
+                                        if let id { proxy.scrollTo(id, anchor: .bottom) }
+                                    }
+                            }.font(.caption)
+                        }
+                    }
                     section(tr("Результат", "Result"), icon: "text.alignleft")
                     if let usage = runner.usage {
                         HStack(spacing: 10) {

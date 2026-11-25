@@ -47,6 +47,9 @@ sealed class AgentWindow : Form
     private readonly RichTextBox result = new() { ReadOnly = true, DetectUrls = false, BorderStyle = BorderStyle.None };
     private readonly ReadableLabel folder = new() { AutoEllipsis = true };
     private readonly ReadableLabel state = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight };
+    private readonly RichTextBox activityView = new() { ReadOnly = true, TabStop = false, DetectUrls = false };
+    private readonly Queue<string> activity = new();
+    private string? lastActivity;
     private readonly ReadableLabel metrics = new() { AutoEllipsis = true };
     private readonly ModernSwitch plan = new() { Text = T("Только план", "Plan only") };
     private readonly ThemeChoice sessions = new() { AccessibleName = T("Разговор", "Conversation"), Width = 250 };
@@ -156,11 +159,12 @@ sealed class AgentWindow : Form
         Add(permissions, commands, folders, sandbox, new ReadableLabel { Text = T("Настройки действуют, пока включены.", "Settings apply while enabled."), Name = "muted" });
         foreach (var section in new[] { connection, launch, permissions }) sidebar.Controls.Add(section);
 
-        var workspace = new BufferedLayout { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, Margin = new(5, 0, 0, 0) };
+        var workspace = new BufferedLayout { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 10, Margin = new(5, 0, 0, 0) };
         foreach (var style in new[] {
             new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 44),
             new RowStyle(SizeType.Absolute, 64), new RowStyle(SizeType.Absolute, 46),
-            new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 34),
+            new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 36),
+            new RowStyle(SizeType.Absolute, 0), new RowStyle(SizeType.Absolute, 34),
             new RowStyle(SizeType.Absolute, 26), new RowStyle(SizeType.Percent, 100) }) workspace.RowStyles.Add(style);
         layout.Controls.Add(workspace, 1, 1);
         profile.Items.AddRange([T("Код", "Code"), T("Данные", "Data"), T("Вопрос", "Question"), T("Картинка", "Image")]);
@@ -213,13 +217,23 @@ sealed class AgentWindow : Form
         stop.Visible = false;
         repeat.Enabled = false;
         workspace.Controls.Add(buttons, 0, 4);
-        workspace.Controls.Add(new ReadableLabel { Text = T("Результат", "Result"), Font = Section, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
+        var activityToggle = new ModernSwitch { Text = T("Ход работы", "Activity"), Width = 160, Anchor = AnchorStyles.Left };
+        var activityFrame = new FieldFrame(activityView) { Dock = DockStyle.Fill, Visible = false };
+        workspace.Controls.Add(activityToggle, 0, 5);
+        workspace.Controls.Add(activityFrame, 0, 6);
+        activityToggle.CheckedChanged += (_, _) =>
+        {
+            workspace.RowStyles[6].Height = activityToggle.Checked ? LogicalToDeviceUnits(126) : 0;
+            activityFrame.Visible = activityToggle.Checked;
+            if (activityToggle.Checked) ShowActivity();
+        };
+        workspace.Controls.Add(new ReadableLabel { Text = T("Результат", "Result"), Font = Section, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 7);
         metrics.Name = "muted";
         metrics.Dock = DockStyle.Fill;
-        workspace.Controls.Add(metrics, 0, 6);
+        workspace.Controls.Add(metrics, 0, 8);
         result.Text = T("Здесь появится ответ агента.", "The agent's response will appear here.");
         result.TabStop = false;
-        workspace.Controls.Add(new FieldFrame(result, 12) { Dock = DockStyle.Fill }, 0, 7);
+        workspace.Controls.Add(new FieldFrame(result, 12) { Dock = DockStyle.Fill }, 0, 9);
 
         commands.Checked = settings.AllCommands;
         folders.Checked = settings.AllFolders;
@@ -570,6 +584,24 @@ sealed class AgentWindow : Form
         await Execute(request, imageRequest, seconds, reference);
     }
 
+    private void RecordActivity(string message)
+    {
+        if (message == lastActivity) return;
+        lastActivity = message;
+        if (activity.Count >= 100) activity.Dequeue();
+        activity.Enqueue(elapsed.Elapsed.ToString(@"m\:ss") + "  ·  " + message);
+        if (activityView.Visible) ShowActivity();
+    }
+
+    private void ShowActivity()
+    {
+        activityView.Text = activity.Count == 0
+            ? T("Здесь появятся этапы обработки запроса.", "Progress will appear here when you run a task.")
+            : string.Join(Environment.NewLine, activity);
+        activityView.SelectionStart = activityView.TextLength;
+        activityView.ScrollToCaret();
+    }
+
     private async Task Execute(AgentRequest request, bool imageRequest, int seconds, string? reference)
     {
         var provider = request.Engine;
@@ -581,6 +613,12 @@ sealed class AgentWindow : Form
         pricing?.Cancel();
         phase = T("Запускаю CLI…", "Starting CLI…");
         elapsed.Restart();
+        if (!catalogOnly)
+        {
+            activity.Clear();
+            lastActivity = null;
+            RecordActivity(imageRequest ? T("Запускаю генерацию…", "Starting image generation…") : phase);
+        }
         progressTimer.Start();
         UpdateProgress();
         generatedImagePath = null;
@@ -588,6 +626,7 @@ sealed class AgentWindow : Form
         {
             if (!ReferenceEquals(job, current) || IsDisposed || current.IsCancellationRequested) return;
             phase = value;
+            if (!catalogOnly) RecordActivity(value);
             UpdateProgress();
         });
         sidebar.Enabled = run.Visible = sessions.Enabled = profile.Enabled = false;
@@ -602,6 +641,7 @@ sealed class AgentWindow : Form
             if (imageRequest)
             {
                 phase = ImageGeneration.Name(provider) + T(" создаёт картинку…", " is generating an image…");
+                RecordActivity(phase);
                 UpdateProgress();
                 var image = await ImageGeneration.Generate(provider, request.Prompt, secret, request.Folder, current.Token, reference);
                 generatedImagePath = image;
@@ -651,7 +691,11 @@ sealed class AgentWindow : Form
         finally
         {
             job = null;
-            if (!IsDisposed) progressTimer.Stop();
+            if (!IsDisposed)
+            {
+                progressTimer.Stop();
+                if (!catalogOnly) RecordActivity(state.Text);
+            }
             elapsed.Stop();
             current.Dispose();
             if (!IsDisposed) { sidebar.Enabled = run.Visible = profile.Enabled = referenceRow.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
