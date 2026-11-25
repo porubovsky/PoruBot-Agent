@@ -13,8 +13,8 @@ record Palette(Color Canvas, Color Card, Color Field, Color Ink, Color Muted, Co
             Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
                 "AppsUseLightTheme", 1) is int value && value == 0);
         return dark
-            ? new(Hex(0x171924), Hex(0x222637), Hex(0x1C2030), Hex(0xF0F2FA), Hex(0xBAC2D8),
-                Hex(0x626F91), Hex(0xBAC2FF), Hex(0x202343), Hex(0x333D60), true)
+            ? new(Hex(0x20212D), Hex(0x292A39), Hex(0x22232F), Hex(0xF4F3FB), Hex(0xB8BAD0),
+                Hex(0x4C4E65), Hex(0x9CA5FF), Hex(0x1F2241), Hex(0x3E4162), true)
             : new(Hex(0xF0F3FA), Hex(0xFFFFFF), Hex(0xF8FAFE), Hex(0x19223A), Hex(0x515D75),
                 Hex(0x73829E), Hex(0x3E4DB2), Hex(0xFFFFFF), Hex(0xDDE5FB), false);
     }
@@ -84,7 +84,7 @@ sealed class ModernButton : Button, IThemed
         MinimumSize = new(0, 33);
         FlatStyle = FlatStyle.Flat;
         FlatAppearance.BorderSize = 0;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         GotFocus += (_, _) => Invalidate();
         LostFocus += (_, _) => Invalidate();
         MouseEnter += (_, _) => { hover = true; Invalidate(); };
@@ -112,7 +112,7 @@ sealed class ModernSwitch : CheckBox, IThemed
     public ModernSwitch()
     {
         Height = 29;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         CheckedChanged += (_, _) => Invalidate();
         GotFocus += (_, _) => Invalidate();
         LostFocus += (_, _) => Invalidate();
@@ -135,6 +135,34 @@ sealed class ModernSwitch : CheckBox, IThemed
     }
 }
 
+sealed class BufferedLayout : TableLayoutPanel
+{
+    public BufferedLayout()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.ResizeRedraw, true);
+    }
+}
+
+sealed class ReadableLabel : Label
+{
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        if (Enabled)
+        {
+            base.OnPaint(e);
+            return;
+        }
+        var flags = TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping;
+        flags |= AutoEllipsis ? TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis : TextFormatFlags.WordBreak;
+        if (TextAlign is ContentAlignment.MiddleLeft or ContentAlignment.MiddleCenter or ContentAlignment.MiddleRight)
+            flags |= TextFormatFlags.VerticalCenter;
+        if (TextAlign is ContentAlignment.TopRight or ContentAlignment.MiddleRight or ContentAlignment.BottomRight)
+            flags |= TextFormatFlags.Right;
+        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor, flags);
+    }
+}
+
 sealed class FieldFrame : Panel, IThemed
 {
     private Palette palette = Palette.Resolve("system");
@@ -142,10 +170,12 @@ sealed class FieldFrame : Panel, IThemed
     public FieldFrame(Control input, int inset = 8)
     {
         Padding = new(inset);
+        SetStyle(ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint, true);
         DoubleBuffered = true;
         if (input is TextBoxBase editor) editor.BorderStyle = BorderStyle.None;
         if (input is TextBox { Multiline: false } line) line.AutoSize = false;
         input.Dock = DockStyle.Fill;
+        TabStop = false;
         input.Enter += (_, _) => Invalidate();
         input.Leave += (_, _) => Invalidate();
         Controls.Add(input);
@@ -165,6 +195,12 @@ sealed class FieldFrame : Panel, IThemed
         Shapes.PaintBackground(e, Parent?.BackColor ?? palette.Canvas);
         Shapes.DrawBox(e.Graphics, new(1, 1, Width - 3, Height - 3), palette.Field,
             ContainsFocus ? palette.Accent : palette.Border);
+    }
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        Invalidate(invalidateChildren: true);
     }
 
     protected override void OnClick(EventArgs e) { base.OnClick(e); Controls[0].Focus(); }
@@ -192,6 +228,7 @@ sealed class ThemeChoice : UserControl, IThemed
         Width = 150;
         TabStop = !editable;
         AccessibleRole = AccessibleRole.ComboBox;
+        SetStyle(ControlStyles.ResizeRedraw, true);
         DoubleBuffered = true;
         if (editable)
         {
@@ -307,15 +344,28 @@ sealed class ThemeChoice : UserControl, IThemed
         var popup = new ToolStripDropDown { Padding = new(1), BackColor = palette.Border, DropShadowEnabled = true };
         dropdown = popup;
         popup.Items.Add(host);
-        void Choose() { if (list.SelectedIndex >= 0) { SelectedIndex = list.SelectedIndex; popup.Close(); } }
-        list.MouseClick += (_, e) => { if (list.IndexFromPoint(e.Location) >= 0) Choose(); };
+        int choice = -1;
+        void Choose(int index)
+        {
+            if (index < 0 || !popup.Visible) return;
+            choice = index;
+            popup.Close();
+        }
+        list.MouseClick += (_, e) => Choose(list.IndexFromPoint(e.Location));
         list.KeyDown += (_, e) =>
         {
-            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Choose(); }
+            if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Choose(list.SelectedIndex); }
             else if (e.KeyCode == Keys.Escape) { e.SuppressKeyPress = true; popup.Close(); }
         };
-        popup.Closed += (_, _) => { dropdown = null; popup.Dispose(); };
+        popup.Closed += async (_, _) =>
+        {
+            dropdown = null;
+            // WinForms still uses the handle while unwinding Close and Show.
+            await Task.Yield();
+            popup.Dispose();
+            if (!IsDisposed && choice >= 0) SelectedIndex = choice;
+        };
         popup.Show(this, new Point(0, Height + 2));
-        list.Focus();
+        if (popup.Visible && !list.IsDisposed) list.Focus();
     }
 }

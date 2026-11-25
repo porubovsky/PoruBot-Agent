@@ -40,19 +40,19 @@ sealed class AgentWindow : Form
     private readonly TextBox prompt = new() { Multiline = true, AcceptsReturn = true };
     private string? imageReference;
     private readonly FlowLayoutPanel referenceRow = new() { Dock = DockStyle.Fill, WrapContents = false };
-    private readonly Label referenceName = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly ReadableLabel referenceName = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly Button chooseReference = Button(T("Добавить образец…", "Add reference…"));
     private readonly Button clearReference = Button(T("Убрать", "Remove"));
     private readonly TextBox scope = new() { PlaceholderText = T("Файлы, границы и критерий готовности", "Files, scope, and completion criteria") };
     private readonly RichTextBox result = new() { ReadOnly = true, DetectUrls = false, BorderStyle = BorderStyle.None };
-    private readonly Label folder = new() { AutoEllipsis = true };
-    private readonly Label state = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight };
-    private readonly Label metrics = new() { AutoEllipsis = true };
+    private readonly ReadableLabel folder = new() { AutoEllipsis = true };
+    private readonly ReadableLabel state = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight };
+    private readonly ReadableLabel metrics = new() { AutoEllipsis = true };
     private readonly ModernSwitch plan = new() { Text = T("Только план", "Plan only") };
     private readonly ThemeChoice sessions = new() { AccessibleName = T("Разговор", "Conversation"), Width = 250 };
     private bool updatingSessions;
     private string? selectedSession;
-    private readonly Label taskHeading = new() { Text = T("Задача", "Task"), Dock = DockStyle.Fill };
+    private readonly ReadableLabel taskHeading = new() { Text = T("Задача", "Task"), Dock = DockStyle.Fill };
     private string? generatedImagePath;
     private readonly ModernSwitch compact = new() { Text = T("Короткий контекст", "Short context"), Checked = true, Width = 230 };
     private readonly ModernSwitch commands = new() { Text = T("Все команды", "All commands") };
@@ -93,14 +93,14 @@ sealed class AgentWindow : Form
         using (var stream = typeof(AgentWindow).Assembly.GetManifestResourceStream("PoruBot.ico"))
             if (stream is not null) Icon = new Icon(stream);
 
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new(16) };
+        var layout = new BufferedLayout { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new(16) };
         layout.ColumnStyles.Add(new(SizeType.Absolute, 350));
         layout.ColumnStyles.Add(new(SizeType.Percent, 100));
         layout.RowStyles.Add(new(SizeType.Absolute, 81));
         layout.RowStyles.Add(new(SizeType.Percent, 100));
         Controls.Add(layout);
 
-        var header = new TableLayoutPanel { Dock = DockStyle.Fill, Name = "card", ColumnCount = 5, Padding = new(14, 0, 14, 0), Margin = new(0, 0, 0, 12) };
+        var header = new BufferedLayout { Dock = DockStyle.Fill, Name = "card", ColumnCount = 5, Padding = new(14, 0, 14, 0), Margin = new(0, 0, 0, 12) };
         header.ColumnStyles.Add(new(SizeType.Absolute, 44));
         header.ColumnStyles.Add(new(SizeType.Percent, 55));
         header.ColumnStyles.Add(new(SizeType.Percent, 45));
@@ -108,7 +108,7 @@ sealed class AgentWindow : Form
         header.ColumnStyles.Add(new(SizeType.Absolute, 122));
         var picture = new PictureBox { Image = Icon?.ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom, Dock = DockStyle.Fill };
         header.Controls.Add(picture, 0, 0);
-        header.Controls.Add(new Label { Text = "PoruBot Agent", Dock = DockStyle.Fill, Font = Title, TextAlign = ContentAlignment.MiddleLeft }, 1, 0);
+        header.Controls.Add(new ReadableLabel { Text = "PoruBot Agent", Dock = DockStyle.Fill, Font = Title, TextAlign = ContentAlignment.MiddleLeft }, 1, 0);
         state.Text = T("Готов к запуску", "Ready");
         state.Dock = DockStyle.Fill;
         state.Name = "muted";
@@ -150,13 +150,13 @@ sealed class AgentWindow : Form
         var launch = CreateSection(T("Запуск", "Run settings"));
         timeout.Items.AddRange(["60", "120", "180", "300", "600", "900"]);
         timeout.SelectedIndex = 2;
-        Add(launch, model, catalog, new Label { Text = T("Уровень Thinking", "Thinking level"), Name = "muted" }, effort, plan,
-            new Label { Text = T("Лимит задачи, секунд", "Time limit, seconds"), Name = "muted" }, timeout);
+        Add(launch, model, catalog, new ReadableLabel { Text = T("Уровень Thinking", "Thinking level"), Name = "muted" }, effort, plan,
+            new ReadableLabel { Text = T("Лимит задачи, секунд", "Time limit, seconds"), Name = "muted" }, timeout);
         var permissions = CreateSection(T("Доступ агента", "Agent access"));
-        Add(permissions, commands, folders, sandbox, new Label { Text = T("Настройки действуют, пока включены.", "Settings apply while enabled."), Name = "muted" });
+        Add(permissions, commands, folders, sandbox, new ReadableLabel { Text = T("Настройки действуют, пока включены.", "Settings apply while enabled."), Name = "muted" });
         foreach (var section in new[] { connection, launch, permissions }) sidebar.Controls.Add(section);
 
-        var workspace = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, Margin = new(5, 0, 0, 0) };
+        var workspace = new BufferedLayout { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, Margin = new(5, 0, 0, 0) };
         foreach (var style in new[] {
             new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 44),
             new RowStyle(SizeType.Absolute, 64), new RowStyle(SizeType.Absolute, 46),
@@ -169,7 +169,7 @@ sealed class AgentWindow : Form
         options.Controls.AddRange([profile, compact]);
         workspace.Controls.Add(options, 0, 0);
         taskHeading.Font = Section;
-        var taskBar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        var taskBar = new BufferedLayout { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
         taskBar.ColumnStyles.Add(new(SizeType.Percent, 100));
         taskBar.ColumnStyles.Add(new(SizeType.AutoSize));
         taskHeading.TextAlign = ContentAlignment.MiddleLeft;
@@ -193,7 +193,7 @@ sealed class AgentWindow : Form
         prompt.TextChanged += (_, _) => SizePrompt();
         workspace.Resize += (_, _) => SizePrompt();
         var scopeFrame = new FieldFrame(scope) { Dock = DockStyle.Fill };
-        var taskDetails = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+        var taskDetails = new Panel { Dock = DockStyle.Fill };
         referenceName.Size = new(200, 36);
         referenceRow.Controls.AddRange([chooseReference, referenceName, clearReference]);
         taskDetails.Controls.AddRange([scopeFrame, referenceRow]);
@@ -213,11 +213,12 @@ sealed class AgentWindow : Form
         stop.Visible = false;
         repeat.Enabled = false;
         workspace.Controls.Add(buttons, 0, 4);
-        workspace.Controls.Add(new Label { Text = T("Результат", "Result"), Font = Section, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
+        workspace.Controls.Add(new ReadableLabel { Text = T("Результат", "Result"), Font = Section, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
         metrics.Name = "muted";
         metrics.Dock = DockStyle.Fill;
         workspace.Controls.Add(metrics, 0, 6);
         result.Text = T("Здесь появится ответ агента.", "The agent's response will appear here.");
+        result.TabStop = false;
         workspace.Controls.Add(new FieldFrame(result, 12) { Dock = DockStyle.Fill }, 0, 7);
 
         commands.Checked = settings.AllCommands;
@@ -317,7 +318,7 @@ sealed class AgentWindow : Form
     {
         var card = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = false, Name = "card", Padding = new(13), Margin = new(0, 0, 0, 10) };
-        card.Controls.Add(new Label { Text = title, Font = Section, Name = "accent", Width = 286, Height = 30 });
+        card.Controls.Add(new ReadableLabel { Text = title, Font = Section, Name = "accent", Width = 286, Height = 30 });
         return card;
     }
 
@@ -594,6 +595,7 @@ sealed class AgentWindow : Form
         repeat.Enabled = referenceRow.Enabled = false;
         metrics.Text = "";
         result.Clear();
+        result.Text = T("Выполняю запрос…", "Working on the request…");
         displayed = null;
         try
         {
@@ -640,7 +642,11 @@ sealed class AgentWindow : Form
                 Render(answer.Answer, answer.Diagnostics);
             }
         }
-        catch (OperationCanceledException) { state.Text = T("Запуск остановлен.", "Run stopped."); }
+        catch (OperationCanceledException)
+        {
+            state.Text = T("Запуск остановлен.", "Run stopped.");
+            Render("", "");
+        }
         catch (Exception error) { state.Text = T("Ошибка запуска.", "Could not start the run."); Render("", Redact(error.Message)); }
         finally
         {
