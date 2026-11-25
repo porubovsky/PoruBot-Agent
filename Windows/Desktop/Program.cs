@@ -1,4 +1,11 @@
+using static L10n;
 using System.Text.RegularExpressions;
+
+static class L10n
+{
+    public static bool IsEnglish { get; set; }
+    public static string T(string russian, string english) => IsEnglish ? english : russian;
+}
 
 static class Program
 {
@@ -6,7 +13,9 @@ static class Program
     static void Main()
     {
         ApplicationConfiguration.Initialize();
-        Application.Run(new AgentWindow());
+        var settings = Settings.Read();
+        L10n.IsEnglish = settings.Language == "en";
+        Application.Run(new AgentWindow(settings));
     }
 }
 
@@ -19,43 +28,43 @@ sealed class AgentWindow : Form
     private static readonly Font Bold = new("Segoe UI", 11, FontStyle.Bold);
     private static readonly Font Mono = new("Consolas", 11);
 
-    private readonly ThemeChoice engine = new() { AccessibleName = "Движок" };
-    private readonly ThemeChoice model = new(true) { AccessibleName = "Модель" };
-    private readonly ThemeChoice effort = new() { AccessibleName = "Уровень Thinking" };
-    private readonly ThemeChoice profile = new() { AccessibleName = "Профиль задачи" };
-    private readonly ThemeChoice theme = new() { AccessibleName = "Цветовая тема" };
+    private readonly ThemeChoice engine = new() { AccessibleName = T("Движок", "Engine") };
+    private readonly ThemeChoice model = new(true) { AccessibleName = T("Модель", "Model") };
+    private readonly ThemeChoice effort = new() { AccessibleName = T("Уровень Thinking", "Thinking level") };
+    private readonly ThemeChoice profile = new() { AccessibleName = T("Профиль задачи", "Task profile") };
+    private readonly ThemeChoice theme = new() { AccessibleName = T("Цветовая тема", "Color theme") };
     private readonly TextBox key = new() { UseSystemPasswordChar = true };
     private readonly TextBox prompt = new() { Multiline = true, AcceptsReturn = true };
     private string? imageReference;
     private readonly FlowLayoutPanel referenceRow = new() { Dock = DockStyle.Fill, WrapContents = false };
     private readonly Label referenceName = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
-    private readonly Button chooseReference = Button("Добавить образец…");
-    private readonly Button clearReference = Button("Убрать");
-    private readonly TextBox scope = new() { PlaceholderText = "Файлы, границы и критерий готовности" };
+    private readonly Button chooseReference = Button(T("Добавить образец…", "Add reference…"));
+    private readonly Button clearReference = Button(T("Убрать", "Remove"));
+    private readonly TextBox scope = new() { PlaceholderText = T("Файлы, границы и критерий готовности", "Files, scope, and completion criteria") };
     private readonly RichTextBox result = new() { ReadOnly = true, DetectUrls = false, BorderStyle = BorderStyle.None };
     private readonly Label folder = new() { AutoEllipsis = true };
     private readonly Label state = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleRight };
     private readonly Label metrics = new() { AutoEllipsis = true };
-    private readonly ModernSwitch plan = new() { Text = "Только план" };
-    private readonly ThemeChoice sessions = new() { AccessibleName = "Разговор", Width = 250 };
+    private readonly ModernSwitch plan = new() { Text = T("Только план", "Plan only") };
+    private readonly ThemeChoice sessions = new() { AccessibleName = T("Разговор", "Conversation"), Width = 250 };
     private bool updatingSessions;
     private string? selectedSession;
-    private readonly Label taskHeading = new() { Text = "Задача", Dock = DockStyle.Fill };
+    private readonly Label taskHeading = new() { Text = T("Задача", "Task"), Dock = DockStyle.Fill };
     private string? generatedImagePath;
-    private readonly ModernSwitch compact = new() { Text = "Короткий контекст", Checked = true, Width = 230 };
-    private readonly ModernSwitch commands = new() { Text = "Все команды" };
-    private readonly ModernSwitch folders = new() { Text = "Все доступные папки" };
-    private readonly ModernSwitch sandbox = new() { Text = "Команды без песочницы" };
-    private readonly ThemeChoice timeout = new(true) { AccessibleName = "Лимит задачи в секундах" };
-    private readonly Button run = Button("▶  Запустить", true);
-    private readonly Button repeat = Button("↻  Повторить");
+    private readonly ModernSwitch compact = new() { Text = T("Короткий контекст", "Short context"), Checked = true, Width = 230 };
+    private readonly ModernSwitch commands = new() { Text = T("Все команды", "All commands") };
+    private readonly ModernSwitch folders = new() { Text = T("Все доступные папки", "All accessible folders") };
+    private readonly ModernSwitch sandbox = new() { Text = T("Команды без песочницы", "Commands outside sandbox") };
+    private readonly ThemeChoice timeout = new(true) { AccessibleName = T("Лимит задачи в секундах", "Task time limit in seconds") };
+    private readonly Button run = Button(T("▶  Запустить", "▶  Run"), true);
+    private readonly Button repeat = Button(T("↻  Повторить", "↻  Repeat"));
     private (AgentRequest Request, bool Image, int Seconds, string? Reference)? lastRun;
-    private readonly Button stop = Button("■  Остановить");
-    private readonly Button catalog = Button("Загрузить модели");
+    private readonly Button stop = Button(T("■  Остановить", "■  Stop"));
+    private readonly Button catalog = Button(T("Загрузить модели", "Load models"));
     private readonly FlowLayoutPanel sidebar = new() { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
     private readonly Dictionary<Engine, string> keys = new();
     private readonly Dictionary<(string, string), string> models = new();
-    private Settings settings = Settings.Read();
+    private Settings settings;
     private CancellationTokenSource? job;
     private CancellationTokenSource? pricing;
     private Engine? previous;
@@ -67,16 +76,17 @@ sealed class AgentWindow : Form
     private string phase = "";
     private string ThemeMode => theme.SelectedIndex switch { 1 => "light", 2 => "dark", _ => "system" };
 
-    public AgentWindow()
+    public AgentWindow(Settings initialSettings)
     {
+        settings = initialSettings;
         Text = "PoruBot Agent";
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new(1160, 800);
         MinimumSize = new(870, 650);
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = Body;
-        prompt.AccessibleName = "Задача";
-        result.AccessibleName = "Результат";
+        prompt.AccessibleName = T("Задача", "Task");
+        result.AccessibleName = T("Результат", "Result");
         using (var stream = typeof(AgentWindow).Assembly.GetManifestResourceStream("PoruBot.ico"))
             if (stream is not null) Icon = new Icon(stream);
 
@@ -87,40 +97,47 @@ sealed class AgentWindow : Form
         layout.RowStyles.Add(new(SizeType.Percent, 100));
         Controls.Add(layout);
 
-        var header = new TableLayoutPanel { Dock = DockStyle.Fill, Name = "card", ColumnCount = 4, Padding = new(14, 0, 14, 0), Margin = new(0, 0, 0, 12) };
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, Name = "card", ColumnCount = 5, Padding = new(14, 0, 14, 0), Margin = new(0, 0, 0, 12) };
         header.ColumnStyles.Add(new(SizeType.Absolute, 44));
         header.ColumnStyles.Add(new(SizeType.Percent, 55));
         header.ColumnStyles.Add(new(SizeType.Percent, 45));
-        header.ColumnStyles.Add(new(SizeType.Absolute, 176));
+        header.ColumnStyles.Add(new(SizeType.Absolute, 162));
+        header.ColumnStyles.Add(new(SizeType.Absolute, 122));
         var picture = new PictureBox { Image = Icon?.ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom, Dock = DockStyle.Fill };
         header.Controls.Add(picture, 0, 0);
         header.Controls.Add(new Label { Text = "PoruBot Agent", Dock = DockStyle.Fill, Font = Title, TextAlign = ContentAlignment.MiddleLeft }, 1, 0);
-        state.Text = "Готов к запуску";
+        state.Text = T("Готов к запуску", "Ready");
         state.Dock = DockStyle.Fill;
         state.Name = "muted";
         header.Controls.Add(state, 2, 0);
-        theme.Items.AddRange(["Как в Windows", "Светлая", "Тёмная"]);
+        theme.Items.AddRange([T("Как в Windows", "Windows theme"), T("Светлая", "Light"), T("Тёмная", "Dark")]);
         theme.SelectedIndex = settings.Theme switch { "light" => 1, "dark" => 2, _ => 0 };
         theme.Dock = DockStyle.Top;
         theme.Margin = new(8, 15, 0, 0);
         header.Controls.Add(theme, 3, 0);
+        var language = new ThemeChoice { AccessibleName = T("Язык", "Language"), Dock = DockStyle.Top,
+            Margin = new(8, 15, 0, 0) };
+        language.Items.AddRange(["Русский", "English"]);
+        language.SelectedIndex = L10n.IsEnglish ? 1 : 0;
+        header.Controls.Add(language, 4, 0);
+        language.SelectedIndexChanged += (_, _) => ChangeLanguage(language.SelectedIndex == 1 ? "en" : "ru");
         layout.Controls.Add(header, 0, 0);
         layout.SetColumnSpan(header, 2);
 
         sidebar.Dock = DockStyle.Fill;
         sidebar.Margin = new(0, 0, 10, 0);
         layout.Controls.Add(sidebar, 0, 1);
-        var chooseFolder = Button("▣  Выбрать папку…");
-        var saveKey = Button("Сохранить ключ");
-        var connection = CreateSection("Подключение");
+        var chooseFolder = Button(T("▣  Выбрать папку…", "▣  Choose folder…"));
+        var saveKey = Button(T("Сохранить ключ", "Save key"));
+        var connection = CreateSection(T("Подключение", "Connection"));
         Add(connection, engine, new FieldFrame(key) { Height = 35 }, saveKey, chooseFolder, folder);
-        var launch = CreateSection("Запуск");
+        var launch = CreateSection(T("Запуск", "Run settings"));
         timeout.Items.AddRange(["60", "120", "180", "300", "600", "900"]);
         timeout.SelectedIndex = 2;
-        Add(launch, model, catalog, new Label { Text = "Уровень Thinking", Name = "muted" }, effort, plan,
-            new Label { Text = "Лимит задачи, секунд", Name = "muted" }, timeout);
-        var permissions = CreateSection("Доступ агента");
-        Add(permissions, commands, folders, sandbox, new Label { Text = "Настройки действуют, пока включены.", Name = "muted" });
+        Add(launch, model, catalog, new Label { Text = T("Уровень Thinking", "Thinking level"), Name = "muted" }, effort, plan,
+            new Label { Text = T("Лимит задачи, секунд", "Time limit, seconds"), Name = "muted" }, timeout);
+        var permissions = CreateSection(T("Доступ агента", "Agent access"));
+        Add(permissions, commands, folders, sandbox, new Label { Text = T("Настройки действуют, пока включены.", "Settings apply while enabled."), Name = "muted" });
         foreach (var section in new[] { connection, launch, permissions }) sidebar.Controls.Add(section);
 
         var workspace = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, Margin = new(5, 0, 0, 0) };
@@ -130,7 +147,7 @@ sealed class AgentWindow : Form
             new RowStyle(SizeType.Absolute, 47), new RowStyle(SizeType.Absolute, 34),
             new RowStyle(SizeType.Absolute, 26), new RowStyle(SizeType.Percent, 100) }) workspace.RowStyles.Add(style);
         layout.Controls.Add(workspace, 1, 1);
-        profile.Items.AddRange(["Код", "Данные", "Вопрос", "Картинка"]);
+        profile.Items.AddRange([T("Код", "Code"), T("Данные", "Data"), T("Вопрос", "Question"), T("Картинка", "Image")]);
         profile.SelectedIndex = 0;
         var options = new FlowLayoutPanel { Dock = DockStyle.Fill };
         options.Controls.AddRange([profile, compact]);
@@ -167,30 +184,30 @@ sealed class AgentWindow : Form
         workspace.Controls.Add(taskDetails, 0, 3);
         chooseReference.Click += (_, _) =>
         {
-            using var dialog = new OpenFileDialog { Title = "Выбрать изображение-образец",
-                Filter = "Изображения PNG, JPEG, WebP|*.png;*.jpg;*.jpeg;*.webp" };
+            using var dialog = new OpenFileDialog { Title = T("Выбрать изображение-образец", "Choose a reference image"),
+                Filter = T("Изображения PNG, JPEG, WebP|*.png;*.jpg;*.jpeg;*.webp", "PNG, JPEG, WebP images|*.png;*.jpg;*.jpeg;*.webp") };
             if (dialog.ShowDialog(this) == DialogResult.OK) SetImageReference(dialog.FileName);
         };
         clearReference.Click += (_, _) => SetImageReference(null);
         SetImageReference(null);
         referenceRow.Visible = false;
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill };
-        var preview = Button("Промпт");
+        var preview = Button(T("Промпт", "Prompt"));
         buttons.Controls.AddRange([run, stop, repeat, preview]);
         stop.Visible = false;
         repeat.Enabled = false;
         workspace.Controls.Add(buttons, 0, 4);
-        workspace.Controls.Add(new Label { Text = "Результат", Font = Section, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
+        workspace.Controls.Add(new Label { Text = T("Результат", "Result"), Font = Section, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 5);
         metrics.Name = "muted";
         metrics.Dock = DockStyle.Fill;
         workspace.Controls.Add(metrics, 0, 6);
-        result.Text = "Здесь появится ответ агента.";
+        result.Text = T("Здесь появится ответ агента.", "The agent's response will appear here.");
         workspace.Controls.Add(new FieldFrame(result, 12) { Dock = DockStyle.Fill }, 0, 7);
 
         commands.Checked = settings.AllCommands;
         folders.Checked = settings.AllFolders;
         sandbox.Checked = settings.OutsideSandbox;
-        folder.Text = settings.Folder.Length > 0 ? settings.Folder : "Папка не выбрана";
+        folder.Text = settings.Folder.Length > 0 ? settings.Folder : T("Папка не выбрана", "No folder selected");
         folder.Tag = settings.Folder;
         engine.DisplayLabel = item => ImageMode && item is Engine provider
             ? provider.Gemini ? "Google" : "OpenAI"
@@ -200,8 +217,8 @@ sealed class AgentWindow : Form
         engine.SelectedIndex = 0;
         plan.CheckedChanged += (_, _) => UpdateAccess();
         commands.CheckedChanged += (_, _) => SaveAccess();
-        folders.CheckedChanged += (_, _) => Confirm(folders, "Агент сможет работать за пределами выбранной папки на доступных локальных дисках.");
-        sandbox.CheckedChanged += (_, _) => Confirm(sandbox, "Разрешённые команды Antigravity смогут работать с файлами и сетью вне песочницы.");
+        folders.CheckedChanged += (_, _) => Confirm(folders, T("Агент сможет работать за пределами выбранной папки на доступных локальных дисках.", "The agent can work outside the selected folder on accessible local drives."));
+        sandbox.CheckedChanged += (_, _) => Confirm(sandbox, T("Разрешённые команды Antigravity смогут работать с файлами и сетью вне песочницы.", "Allowed Antigravity commands can access files and the network outside the sandbox."));
         chooseFolder.Click += (_, _) =>
         {
             using var dialog = new FolderBrowserDialog { SelectedPath = WorkingFolder };
@@ -214,16 +231,16 @@ sealed class AgentWindow : Form
         };
         saveKey.Click += (_, _) =>
         {
-            if (key.Text.Trim().Length == 0) { state.Text = "Вставь API-ключ."; return; }
-            try { Settings.SaveKey(Selected, key.Text.Trim()); state.Text = "Ключ сохранён для твоего профиля Windows."; }
+            if (key.Text.Trim().Length == 0) { state.Text = T("Вставь API-ключ.", "Enter an API key."); return; }
+            try { Settings.SaveKey(Selected, key.Text.Trim()); state.Text = T("Ключ сохранён для твоего профиля Windows.", "Key saved for your Windows profile."); }
             catch (Exception e) when (e is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException)
-            { state.Text = "Не удалось сохранить ключ."; }
+            { state.Text = T("Не удалось сохранить ключ.", "Could not save the key."); }
         };
         run.Click += async (_, _) => await Submit(false);
         catalog.Click += async (_, _) => await Submit(true);
         stop.Click += (_, _) =>
         {
-            phase = "Останавливаю…";
+            phase = T("Останавливаю…", "Stopping…");
             UpdateProgress();
             stop.Enabled = false;
             job?.Cancel();
@@ -235,15 +252,15 @@ sealed class AgentWindow : Form
             if ((old.AllCommands && !settings.AllCommands) || (old.AllFolders && !settings.AllFolders) ||
                 (old.OutsideSandbox && !settings.OutsideSandbox))
             {
-                state.Text = "Доступ агента изменился. Запусти задачу с текущими настройками.";
+                state.Text = T("Доступ агента изменился. Запусти задачу с текущими настройками.", "Agent access has changed. Run the task with the current settings.");
                 return;
             }
             var provider = previous.Request.Engine;
             var secret = (Selected == provider ? key.Text : keys.GetValueOrDefault(provider) ?? "").Trim();
-            if (secret.Length == 0) { state.Text = "Вставь ключ " + provider.Key + "."; return; }
+            if (secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
             await Execute(previous.Request with { Key = secret }, previous.Image, previous.Seconds, previous.Reference);
         };
-        preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), "Промпт");
+        preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), T("Промпт", "Prompt"));
         profile.SelectedIndexChanged += (_, _) =>
         {
             compact.Enabled = !ImageMode;
@@ -341,14 +358,14 @@ sealed class AgentWindow : Form
         {
             try { key.Text = Settings.ReadKey(selected) ?? Environment.GetEnvironmentVariable(selected.Key) ?? ""; }
             catch (Exception e) when (e is IOException or System.Security.Cryptography.CryptographicException or UnauthorizedAccessException)
-            { key.Clear(); state.Text = "Не удалось прочитать сохранённый ключ."; }
+            { key.Clear(); state.Text = T("Не удалось прочитать сохранённый ключ.", "Could not load the saved key."); }
         }
         model.Items.Clear();
         model.Items.AddRange(selected.Models);
         model.SelectedIndex = 0;
         effort.Items.Clear();
-        effort.Items.AddRange(selected.Codex ? ["По умолчанию", "minimal", "low", "medium", "high", "xhigh"]
-            : ["По умолчанию", "low", "medium", "high", "xhigh", "max"]);
+        effort.Items.AddRange(selected.Codex ? [T("По умолчанию", "Default"), "minimal", "low", "medium", "high", "xhigh"]
+            : [T("По умолчанию", "Default"), "low", "medium", "high", "xhigh", "max"]);
         effort.SelectedIndex = selected.Gemini ? 1 : 0;
         UpdateAccess();
     }
@@ -356,18 +373,18 @@ sealed class AgentWindow : Form
     private void SetImageReference(string? path)
     {
         imageReference = path;
-        referenceName.Text = path is null ? "PNG, JPEG, WebP · до 10 МБ" : Path.GetFileName(path);
-        chooseReference.Text = path is null ? "Добавить образец…" : "Заменить образец…";
+        referenceName.Text = path is null ? T("PNG, JPEG, WebP · до 10 МБ", "PNG, JPEG, WebP · up to 10 MB") : Path.GetFileName(path);
+        chooseReference.Text = path is null ? T("Добавить образец…", "Add reference…") : T("Заменить образец…", "Replace reference…");
         clearReference.Visible = path is not null;
     }
 
     private void UpdateAccess()
     {
         scope.Parent!.Visible = !ImageMode;
-        referenceRow.Visible = ImageMode && Selected.Gemini;
+        referenceRow.Visible = ImageMode;
         catalog.Visible = Selected.Gemini && !ImageMode;
         model.Enabled = effort.Enabled = plan.Enabled = !ImageMode;
-        taskHeading.Text = ImageMode ? "Описание картинки · " + ImageGeneration.Name(Selected) : "Задача";
+        taskHeading.Text = ImageMode ? T("Описание картинки · ", "Image prompt · ") + ImageGeneration.Name(Selected) : T("Задача", "Task");
         commands.Enabled = sandbox.Enabled = !ImageMode && Selected.Gemini && !plan.Checked;
         folders.Enabled = !ImageMode && !plan.Checked;
         RefreshSessions();
@@ -383,16 +400,16 @@ sealed class AgentWindow : Form
         try
         {
             sessions.Items.Clear();
-            sessions.Items.Add("Новый разговор");
+            sessions.Items.Add(T("Новый разговор", "New conversation"));
             sessions.Items.AddRange((settings.Sessions ?? []).Where(item => item.Engine == Selected.Name &&
                 string.Equals(item.Folder, WorkingFolder, StringComparison.OrdinalIgnoreCase)));
             var index = sessions.Items.FindIndex(item => item is SavedSession session && session.Id == selectedSession);
             if (selectedSession is not null && index < 0)
             {
                 index = sessions.Items.Count;
-                sessions.Items.Add(new SavedSession(selectedSession, Selected.Name, WorkingFolder, "Разговор по ID"));
+                sessions.Items.Add(new SavedSession(selectedSession, Selected.Name, WorkingFolder, T("Разговор по ID", "Conversation by ID")));
             }
-            sessions.Items.Add("Открыть по ID…");
+            sessions.Items.Add(T("Открыть по ID…", "Open by ID…"));
             sessions.SelectedIndex = Math.Max(0, index);
         }
         finally { updatingSessions = false; }
@@ -403,11 +420,11 @@ sealed class AgentWindow : Form
         if (updatingSessions) return;
         if (sessions.SelectedItem is SavedSession item) { selectedSession = item.Id; return; }
         if (sessions.SelectedIndex == 0) { selectedSession = null; return; }
-        using var dialog = new Form { Text = "Продолжить разговор по ID", ClientSize = new(390, 94),
+        using var dialog = new Form { Text = T("Продолжить разговор по ID", "Resume conversation by ID"), ClientSize = new(390, 94),
             FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent,
             MinimizeBox = false, MaximizeBox = false, Font = Font };
-        var field = new TextBox { PlaceholderText = "UUID сессии из CLI", Bounds = new(12, 14, 365, 31) };
-        var confirm = new Button { Text = "Выбрать", DialogResult = DialogResult.OK, Enabled = false,
+        var field = new TextBox { PlaceholderText = T("UUID сессии из CLI", "Session UUID from CLI"), Bounds = new(12, 14, 365, 31) };
+        var confirm = new Button { Text = T("Выбрать", "Choose"), DialogResult = DialogResult.OK, Enabled = false,
             Bounds = new(264, 49, 113, 32) };
         field.TextChanged += (_, _) => confirm.Enabled = Guid.TryParse(field.Text.Trim(), out _);
         dialog.Controls.AddRange([field, confirm]);
@@ -421,8 +438,8 @@ sealed class AgentWindow : Form
         var all = (settings.Sessions ?? []).ToList();
         var existing = all.FirstOrDefault(item => item.Id == id && item.Engine == provider.Name && item.Folder == directory);
         if (existing is not null) all.Remove(existing);
-        var title = prompt.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "Разговор";
-        title = title.Replace(key, "[ключ скрыт]");
+        var title = prompt.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? T("Разговор", "Conversation");
+        title = title.Replace(key, T("[ключ скрыт]", "[key redacted]"));
         all.Insert(0, existing ?? new SavedSession(id, provider.Name, directory, title[..Math.Min(84, title.Length)]));
         settings = settings with { Sessions = all.Take(200).ToArray() };
         selectedSession = id;
@@ -432,8 +449,8 @@ sealed class AgentWindow : Form
     private void Confirm(CheckBox option, string message)
     {
         if (updatingAccess) return;
-        if (option.Checked && MessageBox.Show(this, message + "\n\nНастройка сохранится для следующих задач.",
-                "Доступ агента", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        if (option.Checked && MessageBox.Show(this, message + T("\n\nНастройка сохранится для следующих задач.", "\n\nThis setting applies to future tasks."),
+                T("Доступ агента", "Agent access"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
         {
             updatingAccess = true;
             option.Checked = false;
@@ -442,26 +459,41 @@ sealed class AgentWindow : Form
         SaveAccess();
     }
 
+    private void ChangeLanguage(string language)
+    {
+        var updated = settings with { Language = language };
+        try
+        {
+            updated.Save();
+            settings = updated;
+            if ((language == "en") != L10n.IsEnglish)
+                MessageBox.Show(this, T("Новый язык включится при следующем запуске PoruBot.", "The new language will take effect the next time you open PoruBot."),
+                    T("Язык интерфейса", "Interface language"));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        { state.Text = T("Не удалось сохранить настройки.", "Could not save settings."); }
+    }
+
     private void SaveAccess()
     {
-        settings = new(commands.Checked, folders.Checked, sandbox.Checked, WorkingFolder, ThemeMode, settings.Sessions);
+        settings = new(commands.Checked, folders.Checked, sandbox.Checked, WorkingFolder, ThemeMode, settings.Sessions, settings.Language);
         try { settings.Save(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        { state.Text = "Не удалось сохранить настройки."; }
+        { state.Text = T("Не удалось сохранить настройки.", "Could not save settings."); }
     }
 
     private string TaskPrompt()
     {
         string task = prompt.Text.Trim();
         if (ImageMode) return task;
-        if (scope.Text.Trim().Length > 0) task += "\n\nГраницы задачи и критерий готовности:\n" + scope.Text.Trim();
+        if (scope.Text.Trim().Length > 0) task += T("\n\nГраницы задачи и критерий готовности:\n", "\n\nScope and completion criteria:\n") + scope.Text.Trim();
         if (!compact.Checked) return task;
         string[] hints = [
-            "Читай только нужные файлы. Сделай минимальное изменение и одну целевую проверку. Сокращай логи.",
-            "Обрабатывай данные локально. Изучи схему и до пяти строк. Верни агрегаты, выводы и ограничения.",
-            "Ответь кратко. Используй файлы и инструменты только при необходимости."
+            T("Читай только нужные файлы. Сделай минимальное изменение и одну целевую проверку. Сокращай логи.", "Read only the files you need. Make the smallest change and run one focused check. Keep logs short."),
+            T("Обрабатывай данные локально. Изучи схему и до пяти строк. Верни агрегаты, выводы и ограничения.", "Analyze data locally. Inspect the schema and up to five rows. Return aggregates, findings, and limitations."),
+            T("Ответь кратко. Используй файлы и инструменты только при необходимости.", "Give a brief answer. Use files and tools only when needed.")
         ];
-        return task + "\n\n" + hints[profile.SelectedIndex] + " Не расширяй задачу.";
+        return task + "\n\n" + hints[profile.SelectedIndex] + T(" Не расширяй задачу.", " Stay within scope.");
     }
 
     private void UpdateProgress()
@@ -477,22 +509,22 @@ sealed class AgentWindow : Form
         bool imageRequest = ImageMode && !catalogOnly;
         if (imageRequest && !provider.Gemini && !provider.Codex)
         {
-            state.Text = "Для картинок выбери Google или OpenAI.";
+            state.Text = T("Для картинок выбери Google или OpenAI.", "Choose Google or OpenAI for images.");
             return;
         }
         var secret = key.Text.Trim();
-        if (secret.Length == 0) { state.Text = "Вставь ключ " + provider.Key + "."; return; }
+        if (secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
         if (!catalogOnly && (!Directory.Exists(WorkingFolder) || prompt.Text.Trim().Length == 0))
-        { state.Text = "Выбери рабочую папку и введи задачу."; return; }
+        { state.Text = T("Выбери рабочую папку и введи задачу.", "Choose a working folder and enter a task."); return; }
         var selectedEffort = effort.SelectedIndex <= 0 ? "" : effort.Text;
         var request = new AgentRequest(provider, secret, WorkingFolder, model.Text.Trim(), selectedEffort,
             plan.Checked, settings, TaskPrompt(), catalogOnly, models, selectedSession);
         if (!int.TryParse(timeout.Text, out int seconds) || seconds is < 30 or > 900)
         {
-            if (!catalogOnly) { state.Text = "Укажи лимит от 30 до 900 секунд."; return; }
+            if (!catalogOnly) { state.Text = T("Укажи лимит от 30 до 900 секунд.", "Enter a time limit between 30 and 900 seconds."); return; }
             seconds = 90;
         }
-        var reference = imageRequest && provider.Gemini ? imageReference : null;
+        var reference = imageRequest ? imageReference : null;
         if (!catalogOnly)
             lastRun = (request with { Key = "", Models = new Dictionary<(string, string), string>(models) }, imageRequest, seconds, reference);
         await Execute(request, imageRequest, seconds, reference);
@@ -506,7 +538,7 @@ sealed class AgentWindow : Form
         var current = new CancellationTokenSource(TimeSpan.FromSeconds(catalogOnly ? 90 : seconds));
         job = current;
         pricing?.Cancel();
-        phase = "Запускаю CLI…";
+        phase = T("Запускаю CLI…", "Starting CLI…");
         elapsed.Restart();
         progressTimer.Start();
         UpdateProgress();
@@ -527,12 +559,12 @@ sealed class AgentWindow : Form
         {
             if (imageRequest)
             {
-                phase = ImageGeneration.Name(provider) + " создаёт картинку…";
+                phase = ImageGeneration.Name(provider) + T(" создаёт картинку…", " is generating an image…");
                 UpdateProgress();
                 var image = await ImageGeneration.Generate(provider, request.Prompt, secret, request.Folder, current.Token, reference);
                 generatedImagePath = image;
-                state.Text = "Картинка готова";
-                Render($"## Картинка готова\n{image}\n\nДвойной щелчок по результату откроет папку с файлом.", "");
+                state.Text = T("Картинка готова", "Image ready");
+                Render(T($"## Картинка готова\n{image}\n\nДвойной щелчок по результату откроет папку с файлом.", $"## Image ready\n{image}\n\nDouble-click the result to open the file's folder."), "");
                 return;
             }
             var output = await Agent.Run(request, progress.Report, current.Token);
@@ -540,7 +572,7 @@ sealed class AgentWindow : Form
             if (catalogOnly)
             {
                 current.Token.ThrowIfCancellationRequested();
-                if (output.Code != 0) { Render("", output.Stderr.Replace(secret, "[ключ скрыт]")); state.Text = "Каталог не загружен."; return; }
+                if (output.Code != 0) { Render("", output.Stderr.Replace(secret, T("[ключ скрыт]", "[key redacted]"))); state.Text = T("Каталог не загружен.", "Could not load the catalog."); return; }
                 models.Clear();
                 foreach (var line in output.Stdout.Split('\n'))
                 {
@@ -553,23 +585,23 @@ sealed class AgentWindow : Form
                     model.Items.AddRange(models.Keys.Select(k => k.Item1).Distinct().ToArray());
                     model.Text = models.Keys.Any(k => k.Item1 == "Gemini 3.8 Flash") ? "Gemini 3.8 Flash" : models.Keys.First().Item1;
                 }
-                state.Text = models.Count > 0 ? "Каталог обновлён." : "Каталог пуст. Можно ввести ID вручную.";
+                state.Text = models.Count > 0 ? T("Каталог обновлён.", "Catalog updated.") : T("Каталог пуст. Можно ввести ID вручную.", "The catalog is empty. Enter the model ID manually.");
             }
             else
             {
                 var answer = Agent.Parse(provider, output, secret);
                 metrics.Text = answer.Usage;
-                if (answer.Cost is { } cost) ShowCost("Оценка CLI", cost);
+                if (answer.Cost is { } cost) ShowCost(T("Оценка CLI", "CLI estimate"), cost);
                 if (provider.Router && answer.ModelUsage.ValueKind == System.Text.Json.JsonValueKind.Object)
                     _ = RefreshRouterCost(answer.ModelUsage);
                 if (answer.Success && answer.SessionId is { } id) RememberSession(provider, request.Folder, id, request.Prompt, secret);
-                state.Text = current.IsCancellationRequested ? "Запуск остановлен." :
-                    answer.Success ? "Завершено" : $"Выполнение прервалось (код {output.Code}).";
+                state.Text = current.IsCancellationRequested ? T("Запуск остановлен.", "Run stopped.") :
+                    answer.Success ? T("Завершено", "Done") : T($"Выполнение прервалось (код {output.Code}).", $"Run ended early (code {output.Code}).");
                 Render(answer.Answer, answer.Diagnostics);
             }
         }
-        catch (OperationCanceledException) { state.Text = "Запуск остановлен."; }
-        catch (Exception error) { state.Text = "Ошибка запуска."; Render("", error.Message.Replace(secret, "[ключ скрыт]")); }
+        catch (OperationCanceledException) { state.Text = T("Запуск остановлен.", "Run stopped."); }
+        catch (Exception error) { state.Text = T("Ошибка запуска.", "Could not start the run."); Render("", error.Message.Replace(secret, T("[ключ скрыт]", "[key redacted]"))); }
         finally
         {
             job = null;
@@ -588,7 +620,7 @@ sealed class AgentWindow : Form
         {
             var cost = await Agent.EstimateRouter(usage, lookup.Token);
             if (!IsDisposed && !lookup.IsCancellationRequested && cost is { } amount)
-                ShowCost("По тарифам OpenRouter", amount);
+                ShowCost(T("По тарифам OpenRouter", "OpenRouter estimate"), amount);
         }
         finally { if (ReferenceEquals(pricing, lookup)) pricing = null; }
     }
@@ -624,7 +656,7 @@ sealed class AgentWindow : Form
         }
         if (diagnostics.Length > 0)
         {
-            if (text.Length > 0) Append("\nДиагностика CLI\n", Bold, palette.Muted);
+            if (text.Length > 0) Append(T("\nДиагностика CLI\n", "\nCLI diagnostics\n"), Bold, palette.Muted);
             Append(diagnostics, Mono, palette.Muted);
         }
         result.Select(0, 0);

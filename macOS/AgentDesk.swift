@@ -4,14 +4,21 @@ import UniformTypeIdentifiers
 
 enum Profile: String, CaseIterable {
     case code = "Код", data = "Данные", quick = "Вопрос"
+    var title: String {
+        switch self {
+        case .code: return tr(rawValue, "Code")
+        case .data: return tr(rawValue, "Data")
+        case .quick: return tr(rawValue, "Question")
+        }
+    }
     var guidance: String {
         switch self {
         case .code:
-            return "Начни с указанных файлов или точечного поиска. Читай только нужные фрагменты, сокращай логи. Сделай минимальное изменение и одну целевую проверку. При повторяющейся ошибке остановись и опиши блокер."
+            return tr("Начни с указанных файлов или точечного поиска. Читай только нужные фрагменты, сокращай логи. Сделай минимальное изменение и одну целевую проверку. При повторяющейся ошибке остановись и опиши блокер.", "Start with the specified files or a targeted search. Read only the relevant sections and keep logs short. Make the smallest change and run one focused check. If an error recurs, stop and explain what is blocking progress.")
         case .data:
-            return "Обрабатывай данные локально скриптом. Для ориентира возьми схему и до 5 строк. Возвращай агрегаты, выводы и ограничения. Сокращай вывод команд и не печатай весь датасет."
+            return tr("Обрабатывай данные локально скриптом. Для ориентира возьми схему и до 5 строк. Возвращай агрегаты, выводы и ограничения. Сокращай вывод команд и не печатай весь датасет.", "Analyze data locally with a script. Start with the schema and up to five rows. Return aggregates, findings, and limitations. Keep command output short.")
         case .quick:
-            return "Ответь кратко. Используй файлы и инструменты только если без них нельзя выполнить задачу. Если данных не хватает, назови конкретный пробел."
+            return tr("Ответь кратко. Используй файлы и инструменты только если без них нельзя выполнить задачу. Если данных не хватает, назови конкретный пробел.", "Give a brief answer. Use files and tools only when needed. If there is not enough information, say what is missing.")
         }
     }
 }
@@ -111,20 +118,20 @@ enum AgentActivity {
     static func describe(_ raw: String) -> String? {
         switch raw.lowercased() {
         case "read", "view_file", "view_file_outline", "list_dir", "glob", "grep", "grep_search", "find_by_name":
-            return "Читаю файлы…"
+            return tr("Читаю файлы…", "Reading files…")
         case "edit", "write", "multiedit", "file_change", "write_to_file", "replace_file_content",
              "multi_replace_file_content":
-            return "Обновляю файлы…"
+            return tr("Обновляю файлы…", "Updating files…")
         case "bash", "powershell", "run_command", "command_execution", "command_status":
-            return "Выполняю команду…"
+            return tr("Выполняю команду…", "Running a command…")
         case "websearch", "web_search", "search_web", "webfetch", "read_url_content":
-            return "Ищу информацию…"
+            return tr("Ищу информацию…", "Searching…")
         case "mcp_tool_call", "call_mcp_tool", "tool_call":
-            return "Использую инструмент…"
+            return tr("Использую инструмент…", "Using a tool…")
         case "reasoning", "thinking", "planner_response", "user_input":
-            return "Анализирую задачу…"
+            return tr("Анализирую задачу…", "Analyzing the task…")
         case "agent_message", "agent_response", "text":
-            return "Готовлю ответ…"
+            return tr("Готовлю ответ…", "Preparing the answer…")
         default:
             return nil
         }
@@ -171,7 +178,7 @@ struct SavedSession: Codable, Equatable {
 final class Runner: ObservableObject {
     @Published var working = false
     @Published private(set) var startedAt: Date?
-    @Published var status = "Готово к запуску"
+    @Published var status = tr("Готово к запуску", "Ready")
     @Published var response = ""
     @Published var diagnostics = ""
     @Published var usage: Usage?
@@ -193,7 +200,7 @@ final class Runner: ObservableObject {
         guard !working else { return }
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &directory), directory.boolValue else {
-            status = "Рабочая папка недоступна."
+            status = tr("Рабочая папка недоступна.", "The working folder is unavailable.")
             return
         }
         working = true
@@ -205,15 +212,15 @@ final class Runner: ObservableObject {
         reportedCost = nil
         costFromRouter = false
         generatedImage = nil
-        status = "\(provider.name) создаёт картинку…"
+        status = tr("\(provider.name) создаёт картинку…", "\(provider.name) is generating an image…")
         imageJob = Task {
             defer { working = false; startedAt = nil; imageJob = nil }
             do {
                 generatedImage = try await provider.generate(prompt: prompt, key: key,
                     folder: URL(fileURLWithPath: folder), timeout: timeout, reference: reference)
-                status = "Картинка готова"
+                status = tr("Картинка готова", "Image ready")
             } catch {
-                status = Task.isCancelled ? "Генерация остановлена." : "Не удалось создать картинку."
+                status = Task.isCancelled ? tr("Генерация остановлена.", "Image generation stopped.") : tr("Не удалось создать картинку.", "Could not generate the image.")
                 if !Task.isCancelled { diagnostics = error.localizedDescription }
             }
         }
@@ -237,13 +244,13 @@ final class Runner: ObservableObject {
                effort: String, mode: String, timeout: Int, prompt: String?, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false, sessionID: String? = nil) {
         guard !working else { return }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { status = "Вставь ключ " + engine.keyName + "."; return }
+        guard !key.isEmpty else { status = tr("Вставь ключ ", "Enter the key for ") + engine.keyName + "."; return }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: path)
         if prompt != nil {
             var directory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: folder, isDirectory: &directory), directory.boolValue else {
-                status = "Рабочая папка недоступна."; return
+                status = tr("Рабочая папка недоступна.", "The working folder is unavailable."); return
             }
             task.currentDirectoryURL = URL(fileURLWithPath: folder)
         }
@@ -281,7 +288,7 @@ final class Runner: ObservableObject {
         costFromRouter = false
         generatedImage = nil
         finishedSession = nil
-        status = installing ? "Устанавливаю \(engine.binary)…" : prompt == nil ? "Читаю каталог CLI…" : "Запускаю агента…"
+        status = installing ? tr("Устанавливаю \(engine.binary)…", "Installing \(engine.binary)…") : prompt == nil ? tr("Читаю каталог CLI…", "Reading the CLI catalog…") : tr("Запускаю агента…", "Starting the agent…")
 
         let reader = output.fileHandleForReading
         let writer = input.fileHandleForWriting
@@ -321,25 +328,25 @@ final class Runner: ObservableObject {
 
             func accept(_ bytes: Data) {
                 let raw = String(decoding: bytes, as: UTF8.self)
-                let line = key.isEmpty ? raw : raw.replacingOccurrences(of: key, with: "[ключ скрыт]")
+                let line = key.isEmpty ? raw : raw.replacingOccurrences(of: key, with: tr("[ключ скрыт]", "[key redacted]"))
                 if prompt == nil {
                     if catalog.count < 100_000 { catalog += line + "\n" }
                 } else if engine == .gemini, let event = try? JSONDecoder().decode(Event.self, from: Data(line.utf8)), event.event != nil {
                     if let final = event.result { result = final }
                     if let id = event.result?.conversation_id ?? event.conversation_id, !id.isEmpty { sessionID = id }
-                    if event.event == "init" { report("Сессия запущена…") }
+                    if event.event == "init" { report(tr("Сессия запущена…", "Session started…")) }
                     if let step = event.step_update {
                         report(AgentActivity.describe(step.tool_name ?? step.step_type ?? ""))
                     }
                 } else if engine == .codex, let event = try? JSONDecoder().decode(CodexEvent.self, from: Data(line.utf8)) {
                     if event.type == "thread.started", let id = event.thread_id { sessionID = id }
-                    if event.type == "turn.started" { report("Анализирую задачу…") }
+                    if event.type == "turn.started" { report(tr("Анализирую задачу…", "Analyzing the task…")) }
                     if event.type == "item.started", let item = event.item { report(AgentActivity.describe(item.type)) }
                     if event.type == "item.completed", event.item?.type == "agent_message" {
                         codexResponse = event.item?.text ?? codexResponse
                     }
                     if event.type == "turn.completed" { codexUsage = event.usage }
-                    if event.type == "turn.failed" { codexError = event.error?.message ?? "Codex завершил задачу с ошибкой." }
+                    if event.type == "turn.failed" { codexError = event.error?.message ?? tr("Codex завершил задачу с ошибкой.", "Codex could not complete the task.") }
                     if event.type == "error", let message = event.message, notes.count < 80 {
                         notes.append(String(message.prefix(1200)))
                     }
@@ -352,7 +359,7 @@ final class Runner: ObservableObject {
                             routerUsage = (try? JSONDecoder().decode(RouterPricing.UsageBreakdown.self, from: data))?.modelUsage
                         }
                     }
-                    if type == "system", object["subtype"] as? String == "init" { report("Сессия запущена…") }
+                    if type == "system", object["subtype"] as? String == "init" { report(tr("Сессия запущена…", "Session started…")) }
                     if type == "assistant", let message = object["message"] as? [String: Any],
                        let blocks = message["content"] as? [[String: Any]] {
                         let tool = blocks.first { $0["type"] as? String == "tool_use" }
@@ -396,10 +403,10 @@ final class Runner: ObservableObject {
                     if let stopped = self.stopMessage {
                         self.status = stopped
                     } else if code == 0 {
-                        self.status = "Установка завершена"
+                        self.status = tr("Установка завершена", "Installation complete")
                         installerCompletion?()
                     } else {
-                        self.status = "Установка завершилась с ошибкой (код \(code))."
+                        self.status = tr("Установка завершилась с ошибкой (код \(code)).", "Installation failed (code \(code)).")
                     }
                 } else if prompt == nil {
                     let choices = ModelChoice.catalog(collected)
@@ -409,8 +416,8 @@ final class Runner: ObservableObject {
                         self.status = stopMessage
                     } else {
                         self.status = code == 0 && !choices.isEmpty
-                            ? "Каталог обновлён · \(choices.count) вариантов"
-                            : "Каталог не получен. Можно ввести модель вручную."
+                            ? tr("Каталог обновлён · \(choices.count) вариантов", "Catalog updated · \(choices.count) options")
+                            : tr("Каталог не получен. Можно ввести модель вручную.", "Could not load the catalog. Enter the model manually.")
                     }
                 } else {
                     self.response = engine == .codex ? openAIResponse : (final?.response ?? final?.result ?? partial)
@@ -432,19 +439,19 @@ final class Runner: ObservableObject {
                         let diagnostic = self.diagnostics.lowercased()
                         if engine == .gemini && diagnostic.contains("no output produced")
                             && diagnostic.contains("unsandboxed") {
-                            self.status = "Antigravity запросил команду вне песочницы"
+                            self.status = tr("Antigravity запросил команду вне песочницы", "Antigravity requested a command outside the sandbox")
                         } else if engine == .gemini && diagnostic.contains("no output produced")
                             && diagnostic.contains("command") && diagnostic.contains("permission") {
-                            self.status = "Antigravity отклонил команду"
+                            self.status = tr("Antigravity отклонил команду", "Antigravity denied the command")
                         } else {
                             if code == 0 && valid, let id = completedID, UUID(uuidString: id) != nil,
                                let directory = task.currentDirectoryURL, let prompt {
-                                let firstLine = String(prompt.split(whereSeparator: \.isNewline).first ?? "Разговор")
-                                let safeTitle = firstLine.replacingOccurrences(of: key, with: "[ключ скрыт]")
+                                let firstLine = prompt.split(whereSeparator: \.isNewline).first.map(String.init) ?? tr("Разговор", "Conversation")
+                                let safeTitle = firstLine.replacingOccurrences(of: key, with: tr("[ключ скрыт]", "[key redacted]"))
                                 self.finishedSession = SavedSession(id: id, engine: engine.rawValue,
                                     folder: SavedSession.workspace(directory.path), title: String(safeTitle.prefix(84)))
                             }
-                            self.status = code == 0 && valid ? "Завершено" : "CLI завершился без успешного результата (код \(code))."
+                            self.status = code == 0 && valid ? tr("Завершено", "Done") : tr("CLI завершился без успешного результата (код \(code)).", "CLI exited without a successful result (code \(code)).")
                         }
                     }
                 }
@@ -453,15 +460,15 @@ final class Runner: ObservableObject {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(timeout)) { [weak self, weak task] in
             guard let self, let task, self.process === task, self.stopMessage == nil else { return }
-            self.stop(reason: "Запуск остановлен по лимиту времени.")
+            self.stop(reason: tr("Запуск остановлен по лимиту времени.", "Stopped at the time limit."))
         }
     }
 
-    func stop(reason: String = "Запуск остановлен.") {
+    func stop(reason: String = tr("Запуск остановлен.", "Run stopped.")) {
         if let imageJob { imageJob.cancel(); return }
         guard let process, stopMessage == nil else { return }
         stopMessage = reason
-        status = "Останавливаю CLI…"
+        status = tr("Останавливаю CLI…", "Stopping CLI…")
         let pid = process.processIdentifier
         let group = processGroup
         if let group { kill(-group, SIGTERM) }
@@ -475,6 +482,8 @@ final class Runner: ObservableObject {
 
 struct Panel: View {
     @StateObject private var runner = Runner()
+    @AppStorage(AppLanguage.preference) private var interfaceLanguage = AppLanguage.current
+    @State private var languageChanged = false
     @State private var repeatLast: (() -> Void)?
     @AppStorage("cliPath") private var cliPath = Runner.executable
     @AppStorage("folder") private var folder = ""
@@ -602,12 +611,12 @@ struct Panel: View {
             ?? [URL(fileURLWithPath: "/System/Applications/Passwords.app")].first(where: {
                 FileManager.default.fileExists(atPath: $0.path)
             }) else {
-            keychainMessage[provider] = "Приложение «Пароли» недоступно на этой версии macOS."
+            keychainMessage[provider] = tr("Приложение «Пароли» недоступно на этой версии macOS.", "The Passwords app is unavailable on this version of macOS.")
             return
         }
         NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
             guard error != nil else { return }
-            DispatchQueue.main.async { keychainMessage[provider] = "Не удалось открыть «Пароли»." }
+            DispatchQueue.main.async { keychainMessage[provider] = tr("Не удалось открыть «Пароли».", "Could not open Passwords.") }
         }
     }
 
@@ -616,7 +625,7 @@ struct Panel: View {
         let secret = key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !secret.isEmpty, keychainSaving.insert(provider).inserted else { return }
         let entry = KeychainEntry.porubot(provider.keyName)
-        keychainMessage[provider] = "Сохраняю ключ…"
+        keychainMessage[provider] = tr("Сохраняю ключ…", "Saving key…")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = entry.save(secret).flatMap {
                 entry.read().flatMap { $0 == secret ? .success(()) : .failure(.empty) }
@@ -631,7 +640,7 @@ struct Panel: View {
                     if let encoded = try? JSONEncoder().encode(entries) { keychainEntries = encoded }
                     if keys[provider] == nil { keys[provider] = secret }
                     if keys[provider] == secret { changedKeys.remove(provider) }
-                    keychainMessage[provider] = "Ключ сохранён в Связке ключей"
+                    keychainMessage[provider] = tr("Ключ сохранён в Связке ключей", "Key saved in Keychain")
                 case let .failure(error):
                     keychainMessage[provider] = error.message
                 }
@@ -644,7 +653,7 @@ struct Panel: View {
         let entry = linked ?? KeychainEntry.porubot(provider.keyName)
         guard !UserDefaults.standard.bool(forKey: autoloadSetting(provider)),
               keys[provider] == nil, keychainLoading.insert(provider).inserted else { return }
-        keychainMessage[provider] = "Читаю Связку ключей…"
+        keychainMessage[provider] = tr("Читаю Связку ключей…", "Reading Keychain…")
         DispatchQueue.global(qos: .userInitiated).async {
             let result = entry.read()
             DispatchQueue.main.async {
@@ -658,7 +667,7 @@ struct Panel: View {
                 switch result {
                 case let .success(secret):
                     keys[provider] = secret
-                    keychainMessage[provider] = "Ключ из Связки ключей"
+                    keychainMessage[provider] = tr("Ключ из Связки ключей", "Key loaded from Keychain")
                 case let .failure(error) where linked == nil && error.isMissing:
                     keychainMessage.removeValue(forKey: provider)
                 case let .failure(error):
@@ -682,10 +691,10 @@ struct Panel: View {
     private var text: String {
         let task = request.trimmingCharacters(in: .whitespacesAndNewlines)
         let focus = scope.trimmingCharacters(in: .whitespacesAndNewlines)
-        let scoped = focus.isEmpty ? task : task + "\n\nГраницы задачи и условие готовности:\n" + focus
+        let scoped = focus.isEmpty ? task : task + tr("\n\nГраницы задачи и условие готовности:\n", "\n\nScope and completion criteria:\n") + focus
         guard optimize else { return scoped }
-        return scoped + "\n\nРаботай точечно. " + profile.guidance
-            + " Не расширяй задачу. В конце кратко укажи результат и проверку."
+        return scoped + tr("\n\nРаботай точечно. ", "\n\nKeep the work focused. ") + profile.guidance
+            + tr(" Не расширяй задачу. В конце кратко укажи результат и проверку.", " Stay within scope. Briefly summarize the result and verification.")
     }
 
     private func launch(_ prompt: String?) {
@@ -694,7 +703,7 @@ struct Panel: View {
             guard let provider = imageProvider else { return }
             let imagePrompt = request.trimmingCharacters(in: .whitespacesAndNewlines)
             let imageFolder = folder
-            let reference = provider == .google ? imageReference : nil
+            let reference = imageReference
             let limit = timeout
             let chosen = engine
             let run = {
@@ -716,7 +725,7 @@ struct Panel: View {
         let useCommands = chosen == .gemini && prompt != nil && mode != "plan"
         let allowAll = useCommands && allowAllCommands
         guard !useCommands || allowAll || activeCommands != nil else {
-            runner.status = "Проверь список команд Antigravity."
+            runner.status = tr("Проверь список команд Antigravity.", "Review the Antigravity command list.")
             showCommands = true
             return
         }
@@ -734,7 +743,7 @@ struct Panel: View {
                 guard (!allowAll || allowAllCommands), (!allFolders || allFoldersEnabled),
                       (!outsideSandbox || outsideSandboxEnabled),
                       (!useCommands || allowAll || activeCommands == commands) else {
-                    runner.status = "Доступ агента изменился. Запусти задачу с текущими настройками."
+                    runner.status = tr("Доступ агента изменился. Запусти задачу с текущими настройками.", "Agent access has changed. Run the task with the current settings.")
                     return
                 }
                 runner.start(engine: chosen, path: executable, folder: prompt == nil ? "" : workingFolder,
@@ -751,7 +760,7 @@ struct Panel: View {
         } else {
             runner.install(chosen) {
                 guard let executable = chosen.resolve(preferred) else {
-                    runner.status = "CLI не найден после установки. Укажи путь вручную."
+                    runner.status = tr("CLI не найден после установки. Укажи путь вручную.", "CLI was not found after installation. Enter its path manually.")
                     return
                 }
                 path.wrappedValue = executable
@@ -775,18 +784,18 @@ struct Panel: View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
                 if mode == "plan" {
-                    Label("В режиме «План» расширенный доступ не применяется.", systemImage: "lock")
+                    Label(tr("В режиме «План» расширенный доступ не применяется.", "Extended access is disabled in Plan mode."), systemImage: "lock")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     if engine == .gemini {
                         Toggle(isOn: $allowAllCommands) {
-                            Label("Все команды", systemImage: "terminal")
+                            Label(tr("Все команды", "All commands"), systemImage: "terminal")
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .help("Разрешает любую команду, включая удаление или перезапись, в пределах песочницы.")
+                        .help(tr("Разрешает любую команду, включая удаление или перезапись, в пределах песочницы.", "Allow any command within the sandbox, including deletion and overwriting."))
                         Button { showCommands = true } label: {
-                            Label("Выбрать команды…", systemImage: "list.bullet.rectangle")
+                            Label(tr("Выбрать команды…", "Choose commands…"), systemImage: "list.bullet.rectangle")
                         }
                         .disabled(allowAllCommands)
                         if mode == "accept-edits" {
@@ -794,40 +803,40 @@ struct Panel: View {
                                 get: { outsideSandboxEnabled },
                                 set: { if $0 { confirmOutsideSandbox = true } else { outsideSandboxEnabled = false } }
                             )) {
-                                Label("Команды без песочницы", systemImage: "lock.open")
+                                Label(tr("Команды без песочницы", "Commands outside sandbox"), systemImage: "lock.open")
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .alert("Запустить Antigravity без песочницы команд?", isPresented: $confirmOutsideSandbox) {
-                                Button("Отмена", role: .cancel) {}
-                                Button("Включить") { outsideSandboxEnabled = true }
+                            .alert(tr("Запустить Antigravity без песочницы команд?", "Run Antigravity commands outside the sandbox?"), isPresented: $confirmOutsideSandbox) {
+                                Button(tr("Отмена", "Cancel"), role: .cancel) {}
+                                Button(tr("Включить", "Enable")) { outsideSandboxEnabled = true }
                             } message: {
-                                Text("Разрешённые команды смогут работать с файлами и сетью вне песочницы. Настройка сохранится для следующих задач.")
+                                Text(tr("Разрешённые команды смогут работать с файлами и сетью вне песочницы. Настройка сохранится для следующих задач.", "Allowed commands will be able to access files and the network outside the sandbox. This setting applies to future tasks."))
                             }
                         }
                     } else {
-                        Label("Команды: правила движка", systemImage: "terminal")
+                        Label(tr("Команды: правила движка", "Commands: engine rules"), systemImage: "terminal")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Toggle(isOn: Binding(
                         get: { allFoldersEnabled },
                         set: { if $0 { confirmAllFolders = true } else { allFoldersEnabled = false } }
                     )) {
-                        Label("Все доступные папки", systemImage: "folder.badge.plus")
+                        Label(tr("Все доступные папки", "All accessible folders"), systemImage: "folder.badge.plus")
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    Text("Настройки действуют, пока включены.")
+                    Text(tr("Настройки действуют, пока включены.", "Settings apply while enabled."))
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }.toggleStyle(.switch).padding(5)
         } label: {
-            section("Доступ агента", icon: "lock.shield")
+            section(tr("Доступ агента", "Agent access"), icon: "lock.shield")
         }
-        .confirmationDialog("Открыть агенту доступ ко всем папкам?", isPresented: $confirmAllFolders, titleVisibility: .visible) {
-            Button("Включить") { allFoldersEnabled = true }
-            Button("Отмена", role: .cancel) {}
+        .confirmationDialog(tr("Открыть агенту доступ ко всем папкам?", "Allow the agent to access all folders?"), isPresented: $confirmAllFolders, titleVisibility: .visible) {
+            Button(tr("Включить", "Enable")) { allFoldersEnabled = true }
+            Button(tr("Отмена", "Cancel"), role: .cancel) {}
         } message: {
-            Text("Агент сможет читать и править файлы за пределами выбранной папки. Доступ останется включённым, пока ты его не отключишь.")
+            Text(tr("Агент сможет читать и править файлы за пределами выбранной папки. Доступ останется включённым, пока ты его не отключишь.", "The agent can read and edit files outside the working folder. Access stays enabled until you turn it off."))
         }
     }
 
@@ -839,7 +848,7 @@ struct Panel: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("PoruBot Agent").font(.custom("AvenirNext-DemiBold", size: 26, relativeTo: .title))
-                    Label(imageMode ? (imageProvider?.name ?? "Картинка") : engine.rawValue, systemImage: engine.symbol)
+                    Label(imageMode ? (imageProvider?.name ?? tr("Картинка", "Image")) : engine.rawValue, systemImage: engine.symbol)
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -859,6 +868,19 @@ struct Panel: View {
                     .foregroundStyle(.secondary).lineLimit(2)
                     .padding(.horizontal, 12).padding(.vertical, 7)
                     .background(.thinMaterial, in: Capsule())
+                Picker(tr("Язык", "Language"), selection: $interfaceLanguage) {
+                    Text("Русский").tag("ru")
+                    Text("English").tag("en")
+                }
+                .labelsHidden()
+                .fixedSize()
+                .accessibilityLabel(tr("Язык", "Language"))
+                .onChange(of: interfaceLanguage) { languageChanged = $0 != AppLanguage.current }
+                .alert(tr("Язык интерфейса", "Interface language"), isPresented: $languageChanged) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(tr("Новый язык включится при следующем запуске PoruBot.", "The new language will take effect the next time you open PoruBot."))
+                }
             }
             .padding(12)
             .background(accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
@@ -868,7 +890,7 @@ struct Panel: View {
                     VStack(alignment: .leading, spacing: 12) {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 9) {
-                            Picker(imageMode ? "Генератор" : "Движок", selection: $engine) {
+                            Picker(imageMode ? tr("Генератор", "Generator") : tr("Движок", "Engine"), selection: $engine) {
                                 if imageMode {
                                     Text("Google").tag(Engine.gemini)
                                     Text("OpenAI").tag(Engine.codex)
@@ -878,75 +900,75 @@ struct Panel: View {
                             }
                             SecureField(engine.keyName, text: key)
                                 .onSubmit { if rememberAPIKeys { saveCurrentKey() } }
-                            Toggle("Запоминать ключ", isOn: $rememberAPIKeys)
+                            Toggle(tr("Запоминать ключ", "Remember key"), isOn: $rememberAPIKeys)
                                 .font(.caption)
                             Menu {
-                                Button("Открыть «Пароли»") { openPasswords() }
-                                Button("Привязать существующую запись…") { openKeychainSettings() }
-                            } label: { Label("Пароли и ключи", systemImage: "key") }
+                                Button(tr("Открыть «Пароли»", "Open Passwords")) { openPasswords() }
+                                Button(tr("Привязать существующую запись…", "Link an existing entry…")) { openKeychainSettings() }
+                            } label: { Label(tr("Пароли и ключи", "Passwords and keys"), systemImage: "key") }
                             HStack {
                                 if key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    Button("Загрузить ключ") {
+                                    Button(tr("Загрузить ключ", "Load key")) {
                                         UserDefaults.standard.removeObject(forKey: autoloadSetting(engine))
                                         keys.removeValue(forKey: engine)
                                         changedKeys.remove(engine)
                                         loadKeychain(for: engine)
                                     }.disabled(keychainLoading.contains(engine))
                                 } else {
-                                    Button("Сохранить ключ") { saveCurrentKey() }
+                                    Button(tr("Сохранить ключ", "Save key")) { saveCurrentKey() }
                                         .disabled(keychainSaving.contains(engine))
                                 }
                             }
                             if let message = keychainMessage[engine] {
                                 Text(message).font(.caption).foregroundStyle(.secondary)
                             }
-                            TextField("Путь к " + engine.binary, text: path)
+                            TextField(tr("Путь к ", "Path to ") + engine.binary, text: path)
                             if engine.resolve(path.wrappedValue) == nil {
-                                Text("CLI установится при запуске.").font(.caption).foregroundStyle(.secondary)
+                                Text(tr("CLI установится при запуске.", "The CLI will install when you run a task.")).font(.caption).foregroundStyle(.secondary)
                             }
                             HStack {
-                                Button { chooseFolder() } label: { Label("Папка…", systemImage: "folder") }
-                                Text(folder.isEmpty ? "Папка не выбрана" : folder)
+                                Button { chooseFolder() } label: { Label(tr("Папка…", "Folder…"), systemImage: "folder") }
+                                Text(folder.isEmpty ? tr("Папка не выбрана", "No folder selected") : folder)
                                     .font(.caption).lineLimit(1).truncationMode(.middle).help(folder)
                             }
                         }.padding(5)
-                    } label: { section("Подключение", icon: "key") }
+                    } label: { section(tr("Подключение", "Connection"), icon: "key") }
                     GroupBox {
                         VStack(alignment: .leading, spacing: 9) {
                             HStack {
                                 if engine == .gemini {
-                                    Button("Загрузить модели") { launch(nil) }
+                                    Button(tr("Загрузить модели", "Load models")) { launch(nil) }
                                         .disabled(key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                                 }
                                 if engine != .gemini {
-                                    Menu("Модели") {
+                                    Menu(tr("Модели", "Models")) {
                                         ForEach(engine.presets, id: \.self) { item in
                                             Button(item) { model = item }
                                         }
                                     }
                                 } else if !runner.models.isEmpty {
-                                    Menu("Выбрать") {
+                                    Menu(tr("Выбрать", "Choose")) {
                                         ForEach(runner.models, id: \.self) { option in
                                             Button(option.label) { model = option.name; effort = option.effort }
                                         }
                                     }
                                 }
                             }
-                            TextField("Имя или ID модели", text: $model)
+                            TextField(tr("Имя или ID модели", "Model name or ID"), text: $model)
                             Picker("Thinking level", selection: $effort) {
-                                Text("По умолчанию").tag("")
+                                Text(tr("По умолчанию", "Default")).tag("")
                                 ForEach(engine.efforts, id: \.self) {
                                     Text($0).tag($0)
                                 }
                             }
-                            Picker("Режим CLI", selection: $mode) {
-                                if engine == .gemini { Text("Авто в песочнице").tag("auto") }
-                                Text("Правки файлов").tag("accept-edits")
-                                Text("План").tag("plan")
+                            Picker(tr("Режим CLI", "CLI mode"), selection: $mode) {
+                                if engine == .gemini { Text(tr("Авто в песочнице", "Automatic in sandbox")).tag("auto") }
+                                Text(tr("Правки файлов", "Edit files")).tag("accept-edits")
+                                Text(tr("План", "Plan")).tag("plan")
                             }
-                            Stepper("Время: \(timeout) с", value: $timeout, in: 30...900, step: 30)
+                            Stepper(tr("Время: \(timeout) с", "Time: \(timeout)s"), value: $timeout, in: 30...900, step: 30)
                         }.padding(5)
-                    } label: { section("Запуск", icon: "slider.horizontal.3") }
+                    } label: { section(tr("Запуск", "Run settings"), icon: "slider.horizontal.3") }
                     .disabled(imageMode)
                     .opacity(imageMode ? 0.65 : 1)
                     if !imageMode { accessControls }
@@ -958,32 +980,32 @@ struct Panel: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Picker("Режим", selection: $imageMode) {
-                            Text("Агент").tag(false)
-                            Text("Картинка").tag(true)
+                        Picker(tr("Режим", "Mode"), selection: $imageMode) {
+                            Text(tr("Агент", "Agent")).tag(false)
+                            Text(tr("Картинка", "Image")).tag(true)
                         }.pickerStyle(.segmented).labelsHidden()
                         if !imageMode {
-                        Picker("Профиль задачи", selection: $profile) {
-                            ForEach(Profile.allCases, id: \.self) { Text($0.rawValue) }
+                        Picker(tr("Профиль задачи", "Task profile"), selection: $profile) {
+                            ForEach(Profile.allCases, id: \.self) { Text($0.title) }
                         }.pickerStyle(.segmented).labelsHidden()
-                        Toggle("Короткий контекст", isOn: $optimize)
+                        Toggle(tr("Короткий контекст", "Short context"), isOn: $optimize)
                         }
                     }
                     if !imageMode && engine.supportsSessions {
                         Menu {
-                            Button("Новый разговор") { selectedSessionID = "" }
+                            Button(tr("Новый разговор", "New conversation")) { selectedSessionID = "" }
                             ForEach(matchingSessions, id: \.id) { session in
                                 Button(session.title) { selectedSessionID = session.id }
                             }
-                            Button("Открыть по ID…") { typedSessionID = ""; showSessionID = true }
+                            Button(tr("Открыть по ID…", "Open by ID…")) { typedSessionID = ""; showSessionID = true }
                         } label: {
-                            Label(selectedSessionID.isEmpty ? "Новый разговор" :
-                                matchingSessions.first { $0.id == selectedSessionID }?.title ?? "Разговор по ID",
+                            Label(selectedSessionID.isEmpty ? tr("Новый разговор", "New conversation") :
+                                matchingSessions.first { $0.id == selectedSessionID }?.title ?? tr("Разговор по ID", "Conversation by ID"),
                                 systemImage: "bubble.left.and.bubble.right")
                                 .lineLimit(1)
                         }.disabled(runner.working || folder.isEmpty)
                     }
-                    section(imageMode ? "Описание картинки" : "Задача", icon: imageMode ? "photo" : "square.and.pencil")
+                    section(imageMode ? tr("Описание картинки", "Image prompt") : tr("Задача", "Task"), icon: imageMode ? "photo" : "square.and.pencil")
                     TextEditor(text: $request)
                         .font(.system(size: 14)).lineSpacing(4)
                         .scrollContentBackground(.hidden)
@@ -997,20 +1019,20 @@ struct Panel: View {
                         }
                         .background(surface, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.20)))
-                        .accessibilityLabel("Задача")
+                        .accessibilityLabel(tr("Задача", "Task"))
                     if !imageMode {
-                        TextField("Файлы, границы и критерий готовности", text: $scope)
-                    } else if imageProvider == .google {
+                        TextField(tr("Файлы, границы и критерий готовности", "Files, scope, and completion criteria"), text: $scope)
+                    } else if imageProvider != nil {
                         HStack {
                             Button { chooseImageReference() } label: {
-                                Label(imageReference == nil ? "Добавить образец…" : "Заменить образец…", systemImage: "photo.badge.plus")
+                                Label(imageReference == nil ? tr("Добавить образец…", "Add reference…") : tr("Заменить образец…", "Replace reference…"), systemImage: "photo.badge.plus")
                             }
                             if let imageReference {
                                 Text(imageReference.lastPathComponent).lineLimit(1).truncationMode(.middle)
                                     .help(imageReference.lastPathComponent)
-                                Button("Убрать") { self.imageReference = nil }
+                                Button(tr("Убрать", "Remove")) { self.imageReference = nil }
                             } else {
-                                Text("PNG, JPEG или WebP · до 10 МБ").foregroundStyle(.secondary)
+                                Text(tr("PNG, JPEG или WebP · до 10 МБ", "PNG, JPEG or WebP · up to 10 MB")).foregroundStyle(.secondary)
                             }
                             Spacer(minLength: 0)
                         }
@@ -1018,34 +1040,34 @@ struct Panel: View {
                     }
                     HStack {
                         if !imageMode {
-                            Button { preview = true } label: { Label("Промпт", systemImage: "eye") }
-                            Text("\(text.utf8.count) байт промпта").font(.caption).foregroundStyle(.secondary)
+                            Button { preview = true } label: { Label(tr("Промпт", "Prompt"), systemImage: "eye") }
+                            Text(tr("\(text.utf8.count) байт промпта", "\(text.utf8.count) prompt bytes")).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if runner.working {
-                            Button { runner.stop() } label: { Label("Остановить", systemImage: "stop.fill") }
+                            Button { runner.stop() } label: { Label(tr("Остановить", "Stop"), systemImage: "stop.fill") }
                         } else {
-                            Button { repeatLast?() } label: { Label("Повторить", systemImage: "arrow.clockwise") }
+                            Button { repeatLast?() } label: { Label(tr("Повторить", "Repeat"), systemImage: "arrow.clockwise") }
                                 .disabled(repeatLast == nil)
-                                .help("Повторно отправить последний запрос с прежними настройками. Действия агента могут повториться.")
-                            Button { launch(text) } label: { Label("Запустить", systemImage: "play.fill") }
+                                .help(tr("Повторно отправить последний запрос с прежними настройками. Действия агента могут повториться.", "Send the last request again with the same settings. Agent actions may be repeated."))
+                            Button { launch(text) } label: { Label(tr("Запустить", "Run"), systemImage: "play.fill") }
                                 .buttonStyle(.borderedProminent)
                                 .disabled((imageMode && imageProvider == nil) || [key.wrappedValue, request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
                         }
                     }
                     Divider()
-                    section("Результат", icon: "text.alignleft")
+                    section(tr("Результат", "Result"), icon: "text.alignleft")
                     if let usage = runner.usage {
                         HStack(spacing: 10) {
-                            metric("Вход", usage.input_tokens)
-                            metric("Выход", usage.output_tokens)
+                            metric(tr("Вход", "Input"), usage.input_tokens)
+                            metric(tr("Выход", "Output"), usage.output_tokens)
                             metric("Thinking", usage.thinking_tokens)
-                            metric("Кэш", usage.cache_read_tokens ?? usage.cached_input_tokens ?? usage.cache_read_input_tokens)
-                            metric("Всего", usage.total_tokens)
+                            metric(tr("Кэш", "Cache"), usage.cache_read_tokens ?? usage.cached_input_tokens ?? usage.cache_read_input_tokens)
+                            metric(tr("Всего", "Total"), usage.total_tokens)
                         }
                     }
                     if let cost = runner.reportedCost {
-                        Text((runner.costFromRouter ? "По тарифам OpenRouter: ≈" : "Оценка CLI: ≈")
+                        Text((runner.costFromRouter ? tr("По тарифам OpenRouter: ≈", "OpenRouter estimate: ≈") : tr("Оценка CLI: ≈", "CLI estimate: ≈"))
                              + cost.formatted(.currency(code: "USD").precision(.fractionLength(2...6))))
                             .font(.caption)
                     }
@@ -1059,12 +1081,12 @@ struct Panel: View {
                                     Label(url.lastPathComponent, systemImage: "folder")
                                 }
                             } else if runner.response.isEmpty {
-                                Text("Здесь появится ответ агента.").foregroundStyle(.secondary)
+                                Text(tr("Здесь появится ответ агента.", "The agent's response will appear here.")).foregroundStyle(.secondary)
                             } else {
                                 AgentResponseView(response: runner.response)
                             }
                             if !runner.diagnostics.isEmpty {
-                                DisclosureGroup("Диагностика CLI", isExpanded: $showDiagnostics) {
+                                DisclosureGroup(tr("Диагностика CLI", "CLI diagnostics"), isExpanded: $showDiagnostics) {
                                     Text(runner.diagnostics).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                                 }
                             }
@@ -1090,12 +1112,12 @@ struct Panel: View {
             .onChange(of: runner.finishedSession) { if let session = $0 { rememberSession(session) } }
             .sheet(isPresented: $showSessionID) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Продолжить разговор по ID").font(.headline)
-                    TextField("UUID сессии из CLI", text: $typedSessionID)
+                    Text(tr("Продолжить разговор по ID", "Resume conversation by ID")).font(.headline)
+                    TextField(tr("UUID сессии из CLI", "Session UUID from CLI"), text: $typedSessionID)
                     HStack {
-                        Button("Отмена") { showSessionID = false }.keyboardShortcut(.cancelAction)
+                        Button(tr("Отмена", "Cancel")) { showSessionID = false }.keyboardShortcut(.cancelAction)
                         Spacer()
-                        Button("Выбрать") {
+                        Button(tr("Выбрать", "Choose")) {
                             selectedSessionID = typedSessionID.trimmingCharacters(in: .whitespacesAndNewlines)
                             showSessionID = false
                         }.keyboardShortcut(.defaultAction)
@@ -1112,7 +1134,7 @@ struct Panel: View {
                 runner.models = []
             }
             .onChange(of: runner.status) { status in
-                showDiagnostics = status.hasPrefix("Не удалось создать картинку") || status.hasPrefix("Antigravity ") || status.hasPrefix("CLI завершился") || status.hasPrefix("Каталог не получен") || status.hasPrefix("Установка завершилась")
+                showDiagnostics = status.hasPrefix(tr("Не удалось создать картинку", "Could not generate the image")) || status.hasPrefix("Antigravity ") || status.hasPrefix(tr("CLI завершился", "CLI exited")) || status.hasPrefix(tr("Каталог не получен", "Could not load the catalog")) || status.hasPrefix(tr("Установка завершилась", "Installation failed"))
             }
             .onChange(of: runner.models) { models in
                 guard model.isEmpty, let first = models.first(where: {
@@ -1123,17 +1145,17 @@ struct Panel: View {
             }
             .sheet(isPresented: $showKeychain) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Связка ключей · " + engine.rawValue).font(.headline)
-                    Text("Укажи имя службы и учётную запись существующей записи типа «Пароль приложения». При выборе движка PoruBot будет читать ключ из этой записи.")
-                    TextField("Имя службы", text: $keychainService)
-                    TextField("Учётная запись", text: $keychainAccount)
+                    Text(tr("Связка ключей · ", "Keychain · ") + engine.rawValue).font(.headline)
+                    Text(tr("Укажи имя службы и учётную запись существующей записи типа «Пароль приложения». При выборе движка PoruBot будет читать ключ из этой записи.", "Enter the service and account of an existing application password. PoruBot will load the key from this entry when you select the engine."))
+                    TextField(tr("Имя службы", "Service name"), text: $keychainService)
+                    TextField(tr("Учётная запись", "Account"), text: $keychainAccount)
                     HStack {
                         if linkedEntries[engine.keyName] != nil {
-                            Button("Отвязать") { linkKeychain(nil) }
+                            Button(tr("Отвязать", "Unlink")) { linkKeychain(nil) }
                         }
                         Spacer()
-                        Button("Отмена") { showKeychain = false }.keyboardShortcut(.cancelAction)
-                        Button("Подключить") {
+                        Button(tr("Отмена", "Cancel")) { showKeychain = false }.keyboardShortcut(.cancelAction)
+                        Button(tr("Подключить", "Link")) {
                             linkKeychain(KeychainEntry(
                                 service: keychainService.trimmingCharacters(in: .whitespacesAndNewlines),
                                 account: keychainAccount.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1146,26 +1168,26 @@ struct Panel: View {
             }
             .sheet(isPresented: $showCommands) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Команды Antigravity").font(.headline)
-                    Text("Один префикс на строку, например npm run test или python3 analysis.py. Правило разрешает и дополнительные аргументы после префикса.")
+                    Text(tr("Команды Antigravity", "Antigravity commands")).font(.headline)
+                    Text(tr("Один префикс на строку, например npm run test или python3 analysis.py. Правило разрешает и дополнительные аргументы после префикса.", "Enter one prefix per line, such as npm run test or python3 analysis.py. The rule also allows arguments after the prefix."))
                     TextEditor(text: $commandText)
                         .font(.system(.body, design: .monospaced))
-                        .accessibilityLabel("Разрешённые команды")
+                        .accessibilityLabel(tr("Разрешённые команды", "Allowed commands"))
                         .border(Color.secondary.opacity(0.25))
                     if activeCommands == nil {
-                        Text("До 20 строк. В каждой укажи команду с аргументом, без кавычек, шаблонов и операторов оболочки.")
+                        Text(tr("До 20 строк. В каждой укажи команду с аргументом, без кавычек, шаблонов и операторов оболочки.", "Up to 20 lines. Include a command and an argument on each line. Omit quotes, patterns, and shell operators."))
                             .foregroundStyle(.red)
                     }
-                    Button("Готово") { showCommands = false }
+                    Button(tr("Готово", "Done")) { showCommands = false }
                         .keyboardShortcut(.defaultAction)
                         .disabled(activeCommands == nil)
                 }.padding(20).frame(width: 500, height: 270)
             }
             .sheet(isPresented: $preview) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Промпт для CLI").font(.headline)
+                    Text(tr("Промпт для CLI", "CLI prompt")).font(.headline)
                     ScrollView { Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    Button("Закрыть") { preview = false }.keyboardShortcut(.cancelAction)
+                    Button(tr("Закрыть", "Close")) { preview = false }.keyboardShortcut(.cancelAction)
                 }.padding(20).frame(width: 570, height: 320)
             }
     }
@@ -1181,7 +1203,7 @@ struct Panel: View {
         let dialog = NSOpenPanel()
         dialog.allowedContentTypes = [.png, .jpeg, .webP]
         dialog.allowsMultipleSelection = false
-        dialog.prompt = "Выбрать"
+        dialog.prompt = tr("Выбрать", "Choose")
         if dialog.runModal() == .OK { imageReference = dialog.url }
     }
 

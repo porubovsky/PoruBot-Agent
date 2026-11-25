@@ -1,3 +1,4 @@
+using static L10n;
 using System.Globalization;
 using System.Diagnostics;
 using System.Security.Cryptography;
@@ -40,7 +41,7 @@ record SavedSession(string Id, string Engine, string Folder, string Title)
     public override string ToString() => Title;
 }
 record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideSandbox = false, string Folder = "", string Theme = "system",
-    SavedSession[]? Sessions = null)
+    SavedSession[]? Sessions = null, string Language = "ru")
 {
     private static readonly string DirectoryPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PoruBot Agent");
@@ -124,7 +125,7 @@ static class Agent
             args.AddRange(["--settings", JsonSerializer.Serialize(options)]);
             if (r.Catalog)
             {
-                status("Читаю каталог моделей…");
+                status(T("Читаю каталог моделей…", "Reading the model catalog…"));
                 args.Add("models");
                 return await Child(executable, args, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "", environment, token);
             }
@@ -159,7 +160,7 @@ static class Agent
             if (r.SessionId is { } thread) args.AddRange(["resume", thread]);
             args.Add("-");
         }
-        status($"Работает {r.Engine.Name}…");
+        status(T($"Работает {r.Engine.Name}…", $"Running {r.Engine.Name}…"));
         string? previous = null;
         return await Child(executable, args, r.Folder, payload, environment, token, line =>
         {
@@ -177,13 +178,13 @@ static class Agent
         var filename = "install" + extension;
         try
         {
-            status($"Загружаю официальный установщик {engine.Binary}…");
+            status(T($"Загружаю официальный установщик {engine.Binary}…", $"Downloading the official {engine.Binary} installer…"));
             var download = await Child(Path.Combine(system, "curl.exe"),
                 ["-fsSL", "--proto", "=https", "--proto-redir", "=https", engine.Installer, "-o", filename],
                 temporary.FullName, "", [], token);
             token.ThrowIfCancellationRequested();
             if (download.Code != 0) throw new InvalidOperationException(download.Stderr);
-            status($"Устанавливаю {engine.Binary}…");
+            status(T($"Устанавливаю {engine.Binary}…", $"Installing {engine.Binary}…"));
             var install = engine.Codex
                 ? await Child(Path.Combine(system, "WindowsPowerShell", "v1.0", "powershell.exe"),
                     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", filename],
@@ -192,7 +193,7 @@ static class Agent
                     temporary.FullName, "", [], token);
             token.ThrowIfCancellationRequested();
             if (install.Code != 0) throw new InvalidOperationException(install.Stderr + "\n" + install.Stdout);
-            return engine.Find() ?? throw new InvalidOperationException("CLI не найден после установки.");
+            return engine.Find() ?? throw new InvalidOperationException(T("CLI не найден после установки.", "CLI not found after installation."));
         }
         finally { try { temporary.Delete(true); } catch (IOException) { } }
     }
@@ -211,7 +212,7 @@ static class Agent
         foreach (var name in RemovedEnvironment) start.Environment.Remove(name);
         foreach (var item in environment) start.Environment[item.Key] = item.Value;
         token.ThrowIfCancellationRequested();
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("Не удалось запустить CLI.");
+        using var process = Process.Start(start) ?? throw new InvalidOperationException(T("Не удалось запустить CLI.", "Could not start the CLI."));
         using var stop = token.Register(() =>
         {
             try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
@@ -250,7 +251,7 @@ static class Agent
             var root = document.RootElement;
             if (engine.Gemini)
             {
-                if (Text(root, "event") == "init") return "Сессия запущена…";
+                if (Text(root, "event") == "init") return T("Сессия запущена…", "Session started…");
                 if (Text(root, "event") != "step_update" || !root.TryGetProperty("step_update", out var step)) return null;
                 var tool = Text(step, "tool_name");
                 var type = Text(step, "step_type");
@@ -259,12 +260,12 @@ static class Agent
             if (engine.Codex)
             {
                 var type = Text(root, "type");
-                if (type == "turn.started") return "Изучаю задачу…";
+                if (type == "turn.started") return T("Изучаю задачу…", "Reviewing the task…");
                 if (type == "item.started" && root.TryGetProperty("item", out var item))
                     return Activity(Text(item, "type"));
                 return null;
             }
-            if (Text(root, "type") == "system" && Text(root, "subtype") == "init") return "Сессия запущена…";
+            if (Text(root, "type") == "system" && Text(root, "subtype") == "init") return T("Сессия запущена…", "Session started…");
             if (Text(root, "type") != "assistant" || !root.TryGetProperty("message", out var message)
                 || !message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array) return null;
             foreach (var block in content.EnumerateArray())
@@ -281,14 +282,14 @@ static class Agent
     private static string? Activity(string value) => value.ToLowerInvariant() switch
     {
         "read" or "view_file" or "view_file_outline" or "list_dir" or "glob" or "grep" or "grep_search" or "find_by_name"
-            => "Читаю файлы…",
+            => T("Читаю файлы…", "Reading files…"),
         "edit" or "write" or "multiedit" or "file_change" or "write_to_file" or "replace_file_content" or
-            "multi_replace_file_content" => "Обновляю файлы…",
-        "bash" or "powershell" or "run_command" or "command_execution" or "command_status" => "Выполняю команду…",
-        "websearch" or "web_search" or "search_web" or "webfetch" or "read_url_content" => "Ищу информацию…",
-        "mcp_tool_call" or "call_mcp_tool" or "tool_call" => "Использую инструмент…",
-        "reasoning" or "thinking" or "planner_response" => "Анализирую задачу…",
-        "agent_message" or "agent_response" or "text" => "Готовлю ответ…",
+            "multi_replace_file_content" => T("Обновляю файлы…", "Updating files…"),
+        "bash" or "powershell" or "run_command" or "command_execution" or "command_status" => T("Выполняю команду…", "Running a command…"),
+        "websearch" or "web_search" or "search_web" or "webfetch" or "read_url_content" => T("Ищу информацию…", "Searching…"),
+        "mcp_tool_call" or "call_mcp_tool" or "tool_call" => T("Использую инструмент…", "Using a tool…"),
+        "reasoning" or "thinking" or "planner_response" => T("Анализирую задачу…", "Analyzing the task…"),
+        "agent_message" or "agent_response" or "text" => T("Готовлю ответ…", "Preparing the answer…"),
         _ => null
     };
 
@@ -335,7 +336,7 @@ static class Agent
         string? session = null;
         double? cost = null;
         JsonElement modelUsage = default;
-        string Redact(string value) => key.Length == 0 ? value : value.Replace(key, "[ключ скрыт]");
+        string Redact(string value) => key.Length == 0 ? value : value.Replace(key, T("[ключ скрыт]", "[key redacted]"));
         var stderr = Redact(output.Stderr).Trim();
         if (stderr.Length > 0) notes.Add(stderr);
         foreach (var line in Redact(output.Stdout).Split('\n', StringSplitOptions.RemoveEmptyEntries))
@@ -396,7 +397,8 @@ static class Agent
                         if (counts.TryGetProperty(name, out var value) && value.TryGetInt64(out long number)) return number.ToString("N0");
                     return "—";
                 }
-                usage = $"Вход {Count("input_tokens")}    Выход {Count("output_tokens")}    Thinking {Count("thinking_tokens")}    Кэш {Count("cache_read_tokens", "cached_input_tokens", "cache_read_input_tokens")}";
+                usage = (L10n.IsEnglish ? $"Input {Count("input_tokens")}    Output {Count("output_tokens")}    Thinking {Count("thinking_tokens")}    Cache {Count("cache_read_tokens", "cached_input_tokens", "cache_read_input_tokens")}"
+                    : $"Вход {Count("input_tokens")}    Выход {Count("output_tokens")}    Thinking {Count("thinking_tokens")}    Кэш {Count("cache_read_tokens", "cached_input_tokens", "cache_read_input_tokens")}");
             }
             catch (JsonException) { notes.Add(line.Trim()); }
         }

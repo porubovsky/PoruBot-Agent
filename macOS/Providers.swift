@@ -1,5 +1,14 @@
 import Foundation
 
+enum AppLanguage {
+    static let preference = "interfaceLanguage"
+    static let current = UserDefaults.standard.string(forKey: preference) == "en" ? "en" : "ru"
+}
+
+func tr(_ russian: String, _ english: String) -> String {
+    AppLanguage.current == "en" ? english : russian
+}
+
 enum Engine: String, CaseIterable {
     case gemini = "Antigravity", claude = "Claude Code", codex = "Codex", router = "OpenRouter"
 

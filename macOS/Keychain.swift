@@ -51,13 +51,13 @@ enum KeychainFailure: Error {
 
     var message: String {
         switch self {
-        case .status(errSecItemNotFound): return "Запись не найдена. Проверь имя службы и учётную запись."
+        case .status(errSecItemNotFound): return tr("Запись не найдена. Проверь имя службы и учётную запись.", "Entry not found. Check the service name and account.")
         case .status(errSecUserCanceled):
-            return "Доступ отменён. Нажми «Загрузить ключ» и подтверди запрос macOS."
+            return tr("Доступ отменён. Нажми «Загрузить ключ» и подтверди запрос macOS.", "Access canceled. Select Load key and confirm the macOS prompt.")
         case .status(errSecAuthFailed), .status(errSecInteractionNotAllowed):
-            return "macOS не дала доступ. Разблокируй связку «Вход» и повтори загрузку."
-        case let .status(status): return "Не удалось прочитать запись (код \(status))."
-        case .empty: return "В записи нет текстового API-ключа."
+            return tr("macOS не дала доступ. Разблокируй связку «Вход» и повтори загрузку.", "macOS denied access. Unlock the login keychain and try again.")
+        case let .status(status): return tr("Не удалось прочитать запись (код \(status)).", "Could not read the entry (code \(status)).")
+        case .empty: return tr("В записи нет текстового API-ключа.", "This entry does not contain a text API key.")
         }
     }
 }
