@@ -42,7 +42,7 @@ record SavedSession(string Id, string Engine, string Folder, string Title)
     public override string ToString() => Title;
 }
 record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideSandbox = false, string Folder = "", string Theme = "system",
-    SavedSession[]? Sessions = null, string Language = "ru", bool UseCliAccount = false)
+    SavedSession[]? Sessions = null, string Language = "ru", bool UseCliAccount = false, Dictionary<string, string>? PromptTemplates = null)
 {
     private static readonly string DirectoryPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PoruBot Agent");

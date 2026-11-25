@@ -31,7 +31,7 @@ For Antigravity, Claude Code, and Codex, select **CLI account** under Connection
 
 ## What you can do
 
-- **Work on a project.** **Freeform** sends your text as written. Choose **Code**, **Data**, or **Question** for task-specific instructions. Select **Prompt** to edit the text PoruBot will send. Use the **Plan** CLI mode to ask for an outline before changes begin.
+- **Work on a project.** **Freeform** sends your text as written. Choose **Code**, **Data**, or **Question** for task-specific instructions. Select **Template…** to edit and save the instructions for the selected mode. Use **Prompt** to edit the text for a single run. Use the **Plan** CLI mode to ask for an outline before changes begin.
 - **Resume a conversation.** For Codex and Antigravity, select a previous conversation for the working folder. You can also enter a session ID from the CLI.
 - **Follow a run.** The status line shows what the CLI is doing and how much time has elapsed. Expand **Activity** to see the sequence of events for the current or most recent task. **Stop** keeps the output received so far. **Repeat** sends the last request again with the same settings. Changes already made to files remain after you stop a run.
 - **Track usage.** PoruBot shows token counts when the CLI reports them. It displays Claude Code's cost estimate and can estimate OpenRouter costs from current catalog rates when exact model IDs and token counts are available.

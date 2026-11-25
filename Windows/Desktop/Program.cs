@@ -35,6 +35,7 @@ sealed class AgentWindow : Form
     private readonly ThemeChoice profile = new() { AccessibleName = T("Режим работы", "Task mode") };
     private readonly Button preview = Button(T("Промпт", "Prompt"));
     private string? editedPrompt;
+    private readonly Button template = Button(T("Шаблон…", "Template…"));
     private readonly RowStyle detailsRow = new(SizeType.Absolute, 46);
     private readonly ThemeChoice theme = new() { AccessibleName = T("Цветовая тема", "Color theme") };
     private readonly ThemeChoice signIn = new() { AccessibleName = T("Вход", "Sign-in") };
@@ -175,7 +176,7 @@ sealed class AgentWindow : Form
         profile.Items.AddRange([T("Свободный", "Freeform"), T("Код", "Code"), T("Данные", "Data"), T("Вопрос", "Question")]);
         profile.SelectedIndex = 0;
         var options = new FlowLayoutPanel { Dock = DockStyle.Fill };
-        options.Controls.AddRange([modeChoice, profile]);
+        options.Controls.AddRange([modeChoice, profile, template]);
         workspace.Controls.Add(options, 0, 0);
         taskHeading.Font = Section;
         var taskBar = new BufferedLayout { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
@@ -295,7 +296,8 @@ sealed class AgentWindow : Form
             if (!previous.Request.Account && secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
             await Execute(previous.Request with { Key = secret }, previous.Image, previous.Seconds, previous.Reference);
         };
-        preview.Click += (_, _) => EditPrompt();
+        preview.Click += (_, _) => EditPrompt(false);
+        template.Click += (_, _) => EditPrompt(true);
         prompt.TextChanged += (_, _) => SetEditedPrompt(null);
         scope.TextChanged += (_, _) => SetEditedPrompt(null);
         profile.SelectedIndexChanged += (_, _) => { SetEditedPrompt(null); UpdateAccess(); };
@@ -422,6 +424,7 @@ sealed class AgentWindow : Form
         key.Parent!.Visible = saveKey.Visible = !AccountMode;
         accountHelp.Visible = AccountMode;
         profile.Visible = !ImageMode;
+        template.Visible = !ImageMode && profile.SelectedIndex > 0;
         scope.Parent!.Visible = !ImageMode && profile.SelectedIndex > 0;
         referenceRow.Visible = ImageMode;
         detailsRow.Height = ImageMode || profile.SelectedIndex > 0 ? LogicalToDeviceUnits(46) : 0;
@@ -537,7 +540,7 @@ sealed class AgentWindow : Form
 
     private void SaveAccess()
     {
-        settings = new(commands.Checked, folders.Checked, sandbox.Checked, WorkingFolder, ThemeMode, settings.Sessions, settings.Language, signIn.SelectedIndex == 1);
+        settings = new(commands.Checked, folders.Checked, sandbox.Checked, WorkingFolder, ThemeMode, settings.Sessions, settings.Language, signIn.SelectedIndex == 1, settings.PromptTemplates);
         try { settings.Save(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         { state.Text = T("Не удалось сохранить настройки.", "Could not save settings."); }
@@ -545,17 +548,50 @@ sealed class AgentWindow : Form
 
     private string TaskPrompt() => editedPrompt ?? GeneratedPrompt();
 
+    private string TemplateID => profile.SelectedIndex switch
+    {
+        1 => "code",
+        2 => "data",
+        3 => "question",
+        _ => "free"
+    };
+
+    private string DefaultTemplate()
+    {
+        var guidance = profile.SelectedIndex switch
+        {
+            1 => T("Читай только нужные файлы. Сделай минимальное изменение и одну целевую проверку. Сокращай логи.", "Read only the files you need. Make the smallest change and run one focused check. Keep logs short."),
+            2 => T("Обрабатывай данные локально. Изучи схему и до пяти строк. Верни агрегаты, выводы и ограничения.", "Analyze data locally. Inspect the schema and up to five rows. Return aggregates, findings, and limitations."),
+            3 => T("Ответь кратко. Используй файлы и инструменты только при необходимости.", "Give a brief answer. Use files and tools only when needed."),
+            _ => ""
+        };
+        return guidance + T(" Не расширяй задачу.", " Stay within scope.");
+    }
+
+    private string ActiveTemplate() => settings.PromptTemplates?.GetValueOrDefault(TemplateID) ?? DefaultTemplate();
+
     private string GeneratedPrompt()
     {
-        string task = prompt.Text;
-        if (ImageMode || profile.SelectedIndex <= 0 || string.IsNullOrWhiteSpace(task)) return task;
-        if (scope.Text.Trim().Length > 0) task += T("\n\nГраницы задачи и критерий готовности:\n", "\n\nScope and completion criteria:\n") + scope.Text.Trim();
-        string[] hints = [
-            T("Читай только нужные файлы. Сделай минимальное изменение и одну целевую проверку. Сокращай логи.", "Read only the files you need. Make the smallest change and run one focused check. Keep logs short."),
-            T("Обрабатывай данные локально. Изучи схему и до пяти строк. Верни агрегаты, выводы и ограничения.", "Analyze data locally. Inspect the schema and up to five rows. Return aggregates, findings, and limitations."),
-            T("Ответь кратко. Используй файлы и инструменты только при необходимости.", "Give a brief answer. Use files and tools only when needed.")
-        ];
-        return task + "\n\n" + hints[profile.SelectedIndex - 1] + T(" Не расширяй задачу.", " Stay within scope.");
+        if (ImageMode || profile.SelectedIndex <= 0) return prompt.Text;
+        var focus = scope.Text.Trim();
+        var constraints = focus.Length == 0 ? "" : T("Границы задачи и критерий готовности:\n", "Scope and completion criteria:\n") + focus;
+        return string.Join("\n\n", new[] { prompt.Text, constraints, ActiveTemplate() }.Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
+
+    private void SaveTemplate(string templateText)
+    {
+        var templates = new Dictionary<string, string>(settings.PromptTemplates ?? []);
+        if (templateText == DefaultTemplate()) templates.Remove(TemplateID);
+        else templates[TemplateID] = templateText;
+        var updated = settings with { PromptTemplates = templates };
+        try
+        {
+            updated.Save();
+            settings = updated;
+            SetEditedPrompt(null);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        { state.Text = T("Не удалось сохранить настройки.", "Could not save settings."); }
     }
 
     private void SetEditedPrompt(string? text)
@@ -564,18 +600,18 @@ sealed class AgentWindow : Form
         preview.Text = text is null ? T("Промпт", "Prompt") : T("Промпт изменён", "Prompt edited");
     }
 
-    private void EditPrompt()
+    private void EditPrompt(bool editTemplate)
     {
         using var dialog = new Form
         {
-            Text = T("Текст для отправки", "Text to send"), Font = Body, ClientSize = new(680, 420),
+            Text = editTemplate ? T("Шаблон режима", "Mode template") : T("Текст для отправки", "Text to send"), Font = Body, ClientSize = new(680, 420),
             MinimumSize = new(480, 300), StartPosition = FormStartPosition.CenterParent,
             BackColor = palette.Canvas, ForeColor = palette.Ink, ShowInTaskbar = false
         };
         var editor = new TextBox
         {
             Multiline = true, AcceptsReturn = true, AcceptsTab = true, ScrollBars = ScrollBars.Vertical,
-            Text = TaskPrompt(), AccessibleName = T("Текст промпта", "Prompt text")
+            Text = editTemplate ? ActiveTemplate() : TaskPrompt(), AccessibleName = T("Текст промпта", "Prompt text")
         };
         var frame = new FieldFrame(editor) { Dock = DockStyle.Fill };
         frame.Apply(palette);
@@ -585,7 +621,7 @@ sealed class AgentWindow : Form
         var reset = Button(T("Восстановить исходный текст", "Restore original text"));
         apply.DialogResult = DialogResult.OK;
         cancel.DialogResult = DialogResult.Cancel;
-        reset.Click += (_, _) => editor.Text = GeneratedPrompt();
+        reset.Click += (_, _) => editor.Text = editTemplate ? DefaultTemplate() : GeneratedPrompt();
         foreach (var button in new[] { apply, cancel, reset })
         {
             ((IThemed)button).Apply(palette);
@@ -595,8 +631,9 @@ sealed class AgentWindow : Form
         dialog.Controls.Add(actions);
         dialog.CancelButton = cancel;
         dialog.Shown += (_, _) => palette.ApplyCaption(dialog.Handle);
-        if (dialog.ShowDialog(this) == DialogResult.OK)
-            SetEditedPrompt(editor.Text == GeneratedPrompt() ? null : editor.Text);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (editTemplate) SaveTemplate(editor.Text);
+        else SetEditedPrompt(editor.Text == GeneratedPrompt() ? null : editor.Text);
     }
 
     private void UpdateProgress()
@@ -619,7 +656,7 @@ sealed class AgentWindow : Form
         var secret = account ? "" : key.Text.Trim();
         if (!account && secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
         var outgoing = TaskPrompt();
-        if (!catalogOnly && (!Directory.Exists(WorkingFolder) || string.IsNullOrWhiteSpace(outgoing)))
+        if (!catalogOnly && (!Directory.Exists(WorkingFolder) || string.IsNullOrWhiteSpace(editedPrompt ?? prompt.Text)))
         { state.Text = T("Выбери рабочую папку и введи задачу.", "Choose a working folder and enter a task."); return; }
         var selectedEffort = effort.SelectedIndex <= 0 ? "" : effort.Text;
         var request = new AgentRequest(provider, secret, WorkingFolder, model.Text.Trim(), selectedEffort,
@@ -680,7 +717,7 @@ sealed class AgentWindow : Form
             if (!catalogOnly) RecordActivity(value);
             UpdateProgress();
         });
-        sidebar.Enabled = run.Visible = sessions.Enabled = profile.Enabled = modeChoice.Enabled = preview.Enabled = false;
+        sidebar.Enabled = run.Visible = sessions.Enabled = profile.Enabled = modeChoice.Enabled = preview.Enabled = template.Enabled = false;
         stop.Visible = stop.Enabled = true;
         repeat.Enabled = referenceRow.Enabled = false;
         metrics.Text = "";
@@ -749,7 +786,7 @@ sealed class AgentWindow : Form
             }
             elapsed.Stop();
             current.Dispose();
-            if (!IsDisposed) { sidebar.Enabled = run.Visible = profile.Enabled = modeChoice.Enabled = preview.Enabled = referenceRow.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
+            if (!IsDisposed) { sidebar.Enabled = run.Visible = profile.Enabled = modeChoice.Enabled = preview.Enabled = template.Enabled = referenceRow.Enabled = true; stop.Visible = false; repeat.Enabled = lastRun is not null; RefreshSessions(); }
         }
     }
 

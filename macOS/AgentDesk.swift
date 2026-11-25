@@ -4,6 +4,14 @@ import UniformTypeIdentifiers
 
 enum Profile: String, CaseIterable {
     case free = "Свободный", code = "Код", data = "Данные", quick = "Вопрос"
+    var templateID: String {
+        switch self {
+        case .free: return "free"
+        case .code: return "code"
+        case .data: return "data"
+        case .quick: return "question"
+        }
+    }
     var title: String {
         switch self {
         case .free: return tr(rawValue, "Freeform")
@@ -610,6 +618,8 @@ struct Panel: View {
     @State private var scope = ""
     @State private var preview = false
     @State private var promptDraft = ""
+    @State private var editingTemplate = false
+    @AppStorage("taskPromptTemplates") private var savedPromptTemplates = Data()
     @State private var editedPrompt: String?
     @State private var showDiagnostics = false
     @State private var commandText = ""
@@ -730,15 +740,36 @@ struct Panel: View {
 
     private var text: String { editedPrompt ?? generatedPrompt }
 
-    private var generatedPrompt: String {
-        if imageMode || profile == .free || request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return request
-        }
-        let task = request
-        let focus = scope.trimmingCharacters(in: .whitespacesAndNewlines)
-        let scoped = focus.isEmpty ? task : task + tr("\n\nГраницы задачи и условие готовности:\n", "\n\nScope and completion criteria:\n") + focus
-        return scoped + tr("\n\nРаботай точечно. ", "\n\nKeep the work focused. ") + profile.guidance
+    private var defaultTemplate: String {
+        tr("Работай точечно. ", "Keep the work focused. ") + profile.guidance
             + tr(" Не расширяй задачу. В конце кратко укажи результат и проверку.", " Stay within scope. Briefly summarize the result and verification.")
+    }
+
+    private var promptTemplates: [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: savedPromptTemplates)) ?? [:]
+    }
+
+    private var activeTemplate: String { promptTemplates[profile.templateID] ?? defaultTemplate }
+
+    private var generatedPrompt: String {
+        guard !imageMode, profile != .free else { return request }
+        let focus = scope.trimmingCharacters(in: .whitespacesAndNewlines)
+        let constraints = focus.isEmpty ? "" : tr("Границы задачи и условие готовности:\n", "Scope and completion criteria:\n") + focus
+        return [request, constraints, activeTemplate].filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }.joined(separator: "\n\n")
+    }
+
+    private var hasTask: Bool {
+        let input = editedPrompt ?? request
+        return !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func saveTemplate() {
+        var templates = promptTemplates
+        templates[profile.templateID] = promptDraft == defaultTemplate ? nil : promptDraft
+        if let encoded = try? JSONEncoder().encode(templates) { savedPromptTemplates = encoded }
+        editedPrompt = nil
     }
 
     private func launch(_ prompt: String?) {
@@ -1044,6 +1075,14 @@ struct Panel: View {
                             Picker(tr("Режим работы", "Task mode"), selection: $profile) {
                                 ForEach(Profile.allCases, id: \.self) { Text($0.title).tag($0) }
                             }.pickerStyle(.menu)
+                            if profile != .free {
+                                Button(tr("Шаблон…", "Template…")) {
+                                    editingTemplate = true
+                                    promptDraft = activeTemplate
+                                    preview = true
+                                }
+                                .disabled(runner.working)
+                            }
                         }
                     }
                     if !imageMode && engine.supportsSessions {
@@ -1094,7 +1133,7 @@ struct Panel: View {
                         .disabled(runner.working)
                     }
                     HStack {
-                        Button { promptDraft = text; preview = true } label: {
+                        Button { editingTemplate = false; promptDraft = text; preview = true } label: {
                             Label(tr("Промпт", "Prompt"), systemImage: "pencil")
                         }.disabled(runner.working)
                         Text(editedPrompt == nil
@@ -1110,7 +1149,7 @@ struct Panel: View {
                                 .help(tr("Повторно отправить последний запрос с прежними настройками. Действия агента могут повториться.", "Send the last request again with the same settings. Agent actions may be repeated."))
                             Button { launch(text) } label: { Label(tr("Запустить", "Run"), systemImage: "play.fill") }
                                 .buttonStyle(.borderedProminent)
-                                .disabled((imageMode && imageProvider == nil) || (!accountMode && key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || [text, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                                .disabled((imageMode && imageProvider == nil) || (!accountMode && key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || !hasTask || folder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
                     Divider()
@@ -1295,17 +1334,18 @@ struct Panel: View {
             .onChange(of: imageMode) { _ in editedPrompt = nil }
             .sheet(isPresented: $preview) {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(tr("Текст для отправки", "Text to send")).font(.headline)
+                    Text(editingTemplate ? tr("Шаблон режима", "Mode template") : tr("Текст для отправки", "Text to send")).font(.headline)
                     TextEditor(text: $promptDraft)
                         .font(.body)
                         .accessibilityLabel(tr("Текст промпта", "Prompt text"))
                         .border(Color.secondary.opacity(0.25))
                     HStack {
-                        Button(tr("Восстановить исходный текст", "Restore original text")) { promptDraft = generatedPrompt }
+                        Button(tr("Восстановить исходный текст", "Restore original text")) { promptDraft = editingTemplate ? defaultTemplate : generatedPrompt }
                         Spacer()
                         Button(tr("Отмена", "Cancel")) { preview = false }.keyboardShortcut(.cancelAction)
                         Button(tr("Применить", "Apply")) {
-                            editedPrompt = promptDraft == generatedPrompt ? nil : promptDraft
+                            if editingTemplate { saveTemplate() }
+                            else { editedPrompt = promptDraft == generatedPrompt ? nil : promptDraft }
                             preview = false
                         }.keyboardShortcut(.defaultAction)
                     }
