@@ -2,6 +2,8 @@
 
 <h1 align="center">PoruBot Agent</h1>
 
+<p align="center"><strong>Русский</strong> · <a href="README.en.md">English</a></p>
+
 <p align="center">Агенты для кода, таблиц и файлов в одном окне.<br>Выберите папку, напишите задачу и запустите агента со своим API-ключом.</p>
 
 <p align="center"><a href="https://github.com/porubovsky/PoruBot-Agent/releases/latest"><strong>Скачать для macOS или Windows</strong></a></p>
