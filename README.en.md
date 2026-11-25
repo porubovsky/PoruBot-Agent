@@ -27,6 +27,8 @@ On macOS, **Remember key** saves your key in Keychain. On Windows, **Save key** 
 
 Choose **Русский** or **English** in the toolbar. The language changes the next time you launch PoruBot.
 
+For Antigravity, Claude Code, and Codex, select **CLI account** under Connection and open **How to sign in…**. Run `agy`, `claude auth login`, or `codex login` in a terminal, then complete sign-in with the provider. PoruBot uses the saved CLI session for tasks. OpenRouter and Image mode require an API key.
+
 ## What you can do
 
 - **Work on a project.** Pick the Code, Data, or Question profile. Use **Plan** to ask for an outline before changes begin. **Short context** asks the agent to stay within scope, and **Prompt** shows what PoruBot will send.

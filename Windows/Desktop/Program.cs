@@ -33,6 +33,9 @@ sealed class AgentWindow : Form
     private readonly ThemeChoice effort = new() { AccessibleName = T("Уровень Thinking", "Thinking level") };
     private readonly ThemeChoice profile = new() { AccessibleName = T("Профиль задачи", "Task profile") };
     private readonly ThemeChoice theme = new() { AccessibleName = T("Цветовая тема", "Color theme") };
+    private readonly ThemeChoice signIn = new() { AccessibleName = T("Вход", "Sign-in") };
+    private readonly Button accountHelp = Button(T("Как войти…", "How to sign in…"));
+    private readonly Button saveKey = Button(T("Сохранить ключ", "Save key"));
     private readonly TextBox key = new() { UseSystemPasswordChar = true };
     private readonly TextBox prompt = new() { Multiline = true, AcceptsReturn = true };
     private string? imageReference;
@@ -128,9 +131,22 @@ sealed class AgentWindow : Form
         sidebar.Margin = new(0, 0, 10, 0);
         layout.Controls.Add(sidebar, 0, 1);
         var chooseFolder = Button(T("▣  Выбрать папку…", "▣  Choose folder…"));
-        var saveKey = Button(T("Сохранить ключ", "Save key"));
+        signIn.Items.AddRange(["API key", T("Аккаунт CLI", "CLI account")]);
+        signIn.SelectedIndex = settings.UseCliAccount ? 1 : 0;
         var connection = CreateSection(T("Подключение", "Connection"));
-        Add(connection, engine, new FieldFrame(key) { Height = 35 }, saveKey, chooseFolder, folder);
+        Add(connection, engine, signIn, new FieldFrame(key) { Height = 35 }, saveKey, accountHelp, chooseFolder, folder);
+        signIn.SelectedIndexChanged += (_, _) =>
+        {
+            lastRun = null;
+            repeat.Enabled = false;
+            selectedSession = null;
+            models.Clear();
+            model.Text = "";
+            effort.SelectedIndex = 0;
+            UpdateAccess();
+            SaveAccess();
+        };
+        accountHelp.Click += (_, _) => ShowAccountHelp();
         var launch = CreateSection(T("Запуск", "Run settings"));
         timeout.Items.AddRange(["60", "120", "180", "300", "600", "900"]);
         timeout.SelectedIndex = 2;
@@ -256,8 +272,8 @@ sealed class AgentWindow : Form
                 return;
             }
             var provider = previous.Request.Engine;
-            var secret = (Selected == provider ? key.Text : keys.GetValueOrDefault(provider) ?? "").Trim();
-            if (secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
+            var secret = previous.Request.Account ? "" : (Selected == provider ? key.Text : keys.GetValueOrDefault(provider) ?? "").Trim();
+            if (!previous.Request.Account && secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
             await Execute(previous.Request with { Key = secret }, previous.Image, previous.Seconds, previous.Reference);
         };
         preview.Click += (_, _) => MessageBox.Show(this, TaskPrompt(), T("Промпт", "Prompt"));
@@ -291,6 +307,7 @@ sealed class AgentWindow : Form
     }
 
     private Engine Selected => (Engine)engine.SelectedItem!;
+    private bool AccountMode => !ImageMode && !Selected.Router && signIn.SelectedIndex == 1;
     private bool ImageMode => profile.SelectedIndex == 3;
     private string WorkingFolder => folder.Tag as string ?? "";
 
@@ -362,11 +379,11 @@ sealed class AgentWindow : Form
         }
         model.Items.Clear();
         model.Items.AddRange(selected.Models);
-        model.SelectedIndex = 0;
+        model.SelectedIndex = AccountMode ? -1 : 0;
         effort.Items.Clear();
         effort.Items.AddRange(selected.Codex ? [T("По умолчанию", "Default"), "minimal", "low", "medium", "high", "xhigh"]
             : [T("По умолчанию", "Default"), "low", "medium", "high", "xhigh", "max"]);
-        effort.SelectedIndex = selected.Gemini ? 1 : 0;
+        effort.SelectedIndex = selected.Gemini && !AccountMode ? 1 : 0;
         UpdateAccess();
     }
 
@@ -380,6 +397,9 @@ sealed class AgentWindow : Form
 
     private void UpdateAccess()
     {
+        signIn.Visible = !ImageMode && !Selected.Router;
+        key.Parent!.Visible = saveKey.Visible = !AccountMode;
+        accountHelp.Visible = AccountMode;
         scope.Parent!.Visible = !ImageMode;
         referenceRow.Visible = ImageMode;
         catalog.Visible = Selected.Gemini && !ImageMode;
@@ -439,7 +459,7 @@ sealed class AgentWindow : Form
         var existing = all.FirstOrDefault(item => item.Id == id && item.Engine == provider.Name && item.Folder == directory);
         if (existing is not null) all.Remove(existing);
         var title = prompt.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? T("Разговор", "Conversation");
-        title = title.Replace(key, T("[ключ скрыт]", "[key redacted]"));
+        if (key.Length > 0) title = title.Replace(key, T("[ключ скрыт]", "[key redacted]"));
         all.Insert(0, existing ?? new SavedSession(id, provider.Name, directory, title[..Math.Min(84, title.Length)]));
         settings = settings with { Sessions = all.Take(200).ToArray() };
         selectedSession = id;
@@ -459,6 +479,24 @@ sealed class AgentWindow : Form
         SaveAccess();
     }
 
+    private void ShowAccountHelp()
+    {
+        var command = Selected.AccountCommand;
+        var message = T("Выполни в терминале: ", "Run in a terminal: ") + command
+            + T("\nЗаверши вход у провайдера и вернись в PoruBot.\n\nСкопировать команду?",
+                "\nComplete sign-in with the provider, then return to PoruBot.\n\nCopy the command?");
+        if (Selected.Gemini)
+            message += T("\nДля agy убери modelProvider: gemini из настроек CLI, если он задан.",
+                "\nFor agy, remove modelProvider: gemini from CLI settings if set.");
+        if (MessageBox.Show(this, message, T("Вход в CLI", "Sign in to the CLI"),
+            MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+        {
+            try { Clipboard.SetText(command); }
+            catch (System.Runtime.InteropServices.ExternalException)
+            { state.Text = T("Не удалось скопировать команду.", "Could not copy the command."); }
+        }
+    }
+
     private void ChangeLanguage(string language)
     {
         var updated = settings with { Language = language };
@@ -476,7 +514,7 @@ sealed class AgentWindow : Form
 
     private void SaveAccess()
     {
-        settings = new(commands.Checked, folders.Checked, sandbox.Checked, WorkingFolder, ThemeMode, settings.Sessions, settings.Language);
+        settings = new(commands.Checked, folders.Checked, sandbox.Checked, WorkingFolder, ThemeMode, settings.Sessions, settings.Language, signIn.SelectedIndex == 1);
         try { settings.Save(); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         { state.Text = T("Не удалось сохранить настройки.", "Could not save settings."); }
@@ -512,13 +550,14 @@ sealed class AgentWindow : Form
             state.Text = T("Для картинок выбери Google или OpenAI.", "Choose Google or OpenAI for images.");
             return;
         }
-        var secret = key.Text.Trim();
-        if (secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
+        bool account = AccountMode;
+        var secret = account ? "" : key.Text.Trim();
+        if (!account && secret.Length == 0) { state.Text = T("Вставь ключ ", "Enter the key for ") + provider.Key + "."; return; }
         if (!catalogOnly && (!Directory.Exists(WorkingFolder) || prompt.Text.Trim().Length == 0))
         { state.Text = T("Выбери рабочую папку и введи задачу.", "Choose a working folder and enter a task."); return; }
         var selectedEffort = effort.SelectedIndex <= 0 ? "" : effort.Text;
         var request = new AgentRequest(provider, secret, WorkingFolder, model.Text.Trim(), selectedEffort,
-            plan.Checked, settings, TaskPrompt(), catalogOnly, models, selectedSession);
+            plan.Checked, settings, TaskPrompt(), catalogOnly, models, selectedSession, account);
         if (!int.TryParse(timeout.Text, out int seconds) || seconds is < 30 or > 900)
         {
             if (!catalogOnly) { state.Text = T("Укажи лимит от 30 до 900 секунд.", "Enter a time limit between 30 and 900 seconds."); return; }
@@ -534,6 +573,7 @@ sealed class AgentWindow : Form
     {
         var provider = request.Engine;
         var secret = request.Key;
+        string Redact(string value) => secret.Length == 0 ? value : value.Replace(secret, T("[ключ скрыт]", "[key redacted]"));
         bool catalogOnly = request.Catalog;
         var current = new CancellationTokenSource(TimeSpan.FromSeconds(catalogOnly ? 90 : seconds));
         job = current;
@@ -572,7 +612,7 @@ sealed class AgentWindow : Form
             if (catalogOnly)
             {
                 current.Token.ThrowIfCancellationRequested();
-                if (output.Code != 0) { Render("", output.Stderr.Replace(secret, T("[ключ скрыт]", "[key redacted]"))); state.Text = T("Каталог не загружен.", "Could not load the catalog."); return; }
+                if (output.Code != 0) { Render("", Redact(output.Stderr)); state.Text = T("Каталог не загружен.", "Could not load the catalog."); return; }
                 models.Clear();
                 foreach (var line in output.Stdout.Split('\n'))
                 {
@@ -601,7 +641,7 @@ sealed class AgentWindow : Form
             }
         }
         catch (OperationCanceledException) { state.Text = T("Запуск остановлен.", "Run stopped."); }
-        catch (Exception error) { state.Text = T("Ошибка запуска.", "Could not start the run."); Render("", error.Message.Replace(secret, T("[ключ скрыт]", "[key redacted]"))); }
+        catch (Exception error) { state.Text = T("Ошибка запуска.", "Could not start the run."); Render("", Redact(error.Message)); }
         finally
         {
             job = null;

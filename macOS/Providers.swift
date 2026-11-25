@@ -12,6 +12,17 @@ func tr(_ russian: String, _ english: String) -> String {
 enum Engine: String, CaseIterable {
     case gemini = "Antigravity", claude = "Claude Code", codex = "Codex", router = "OpenRouter"
 
+    var supportsAccount: Bool { self != .router }
+
+    var accountCommand: String {
+        switch self {
+        case .gemini: return "agy"
+        case .claude: return "claude auth login"
+        case .codex: return "codex login"
+        case .router: return ""
+        }
+    }
+
     var supportsSessions: Bool { self == .gemini || self == .codex }
 
     var symbol: String {
@@ -73,11 +84,11 @@ enum Engine: String, CaseIterable {
         }
     }
 
-    func environment(key: String) -> [String: String] {
+    func environment(key: String, account: Bool = false) -> [String: String] {
         var env = Self.inherited
         for name in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
                      "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY",
-                     "CODEX_ACCESS_TOKEN", "GOOGLE_GEMINI_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL",
+                     "CODEX_ACCESS_TOKEN", "AGY_ADC_AUTH", "OPENAI_IDENTITY_TOKEN_FILE", "GOOGLE_GEMINI_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL",
                      "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"] {
             env.removeValue(forKey: name)
         }
@@ -86,7 +97,7 @@ enum Engine: String, CaseIterable {
             env["ANTHROPIC_AUTH_TOKEN"] = key
             env["ANTHROPIC_BASE_URL"] = "https://openrouter.ai/api"
             env["ANTHROPIC_API_KEY"] = ""
-        } else {
+        } else if !account {
             env[keyName] = key
         }
         if self == .claude || self == .router {
@@ -106,8 +117,8 @@ enum Engine: String, CaseIterable {
         return entries
     }
 
-    private static func geminiSettings(commands: [String], sandbox: Bool) -> String {
-        var settings: [String: Any] = ["modelProvider": "gemini"]
+    private static func geminiSettings(commands: [String], sandbox: Bool, account: Bool) -> String {
+        var settings: [String: Any] = ["modelProvider": account ? "" : "gemini"]
         if !sandbox { settings["enableTerminalSandbox"] = false }
         if !commands.isEmpty {
             settings["permissions"] = ["allow": commands.map { "command(\($0))" }]
@@ -116,14 +127,14 @@ enum Engine: String, CaseIterable {
         return String(decoding: data, as: UTF8.self)
     }
 
-    func arguments(model: String, effort: String, mode: String, catalog: Bool, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false, sessionID: String? = nil) -> [String] {
+    func arguments(model: String, effort: String, mode: String, catalog: Bool, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false, sessionID: String? = nil, account: Bool = false) -> [String] {
         let selection = model.isEmpty ? [] : ["--model", model]
         let thinking = effort.isEmpty ? [] : ["--effort", effort]
         let folders = allFolders && !catalog && mode != "plan" ? ["--add-dir", "/"] : []
         switch self {
         case .gemini:
             let sandbox = catalog || mode != "accept-edits" || !outsideSandbox
-            let setting = ["--settings", Self.geminiSettings(commands: catalog || mode == "plan" ? [] : commands, sandbox: sandbox)]
+            let setting = ["--settings", Self.geminiSettings(commands: catalog || mode == "plan" ? [] : commands, sandbox: sandbox, account: account)]
             return catalog ? setting + ["models"] : setting + [
                 "--input-format", "stream-json", "--output-format", "stream-json", "--disable-slash-commands",
                 sandbox ? "--sandbox" : "--sandbox=false", "--mode", mode

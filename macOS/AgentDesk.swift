@@ -241,10 +241,10 @@ final class Runner: ObservableObject {
     }
 
     func start(engine: Engine, path: String, folder: String, key: String, model: String,
-               effort: String, mode: String, timeout: Int, prompt: String?, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false, sessionID: String? = nil) {
+               effort: String, mode: String, timeout: Int, prompt: String?, commands: [String] = [], allFolders: Bool = false, outsideSandbox: Bool = false, sessionID: String? = nil, account: Bool = false) {
         guard !working else { return }
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { status = tr("Вставь ключ ", "Enter the key for ") + engine.keyName + "."; return }
+        guard account || !key.isEmpty else { status = tr("Вставь ключ ", "Enter the key for ") + engine.keyName + "."; return }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: path)
         if prompt != nil {
@@ -254,8 +254,8 @@ final class Runner: ObservableObject {
             }
             task.currentDirectoryURL = URL(fileURLWithPath: folder)
         }
-        task.environment = engine.environment(key: key)
-        task.arguments = engine.arguments(model: model, effort: effort, mode: mode, catalog: prompt == nil, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox, sessionID: sessionID)
+        task.environment = engine.environment(key: key, account: account)
+        task.arguments = engine.arguments(model: model, effort: effort, mode: mode, catalog: prompt == nil, commands: commands, allFolders: allFolders, outsideSandbox: outsideSandbox, sessionID: sessionID, account: account)
         run(task, engine: engine, key: key, prompt: prompt, timeout: prompt == nil ? 25 : timeout)
     }
 
@@ -447,7 +447,7 @@ final class Runner: ObservableObject {
                             if code == 0 && valid, let id = completedID, UUID(uuidString: id) != nil,
                                let directory = task.currentDirectoryURL, let prompt {
                                 let firstLine = prompt.split(whereSeparator: \.isNewline).first.map(String.init) ?? tr("Разговор", "Conversation")
-                                let safeTitle = firstLine.replacingOccurrences(of: key, with: tr("[ключ скрыт]", "[key redacted]"))
+                                let safeTitle = key.isEmpty ? firstLine : firstLine.replacingOccurrences(of: key, with: tr("[ключ скрыт]", "[key redacted]"))
                                 self.finishedSession = SavedSession(id: id, engine: engine.rawValue,
                                     folder: SavedSession.workspace(directory.path), title: String(safeTitle.prefix(84)))
                             }
@@ -492,6 +492,15 @@ struct Panel: View {
     @AppStorage("rememberAPIKeys") private var rememberAPIKeys = false
     @State private var changedKeys: Set<Engine> = []
     @State private var imageMode = false
+    @AppStorage("useCLIAccount") private var useCLIAccount = false
+    @State private var showAccountHelp = false
+    private var accountMode: Bool { useCLIAccount && !imageMode && engine.supportsAccount }
+    private var accountCommand: String {
+        let preferred = (path.wrappedValue as NSString).expandingTildeInPath
+        guard let executable = engine.resolve(preferred) else { return engine.accountCommand }
+        let quotedPath = "'" + executable.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return quotedPath + String(engine.accountCommand.dropFirst(engine.binary.count))
+    }
     @State private var imageReference: URL?
     @AppStorage("recentAgentSessions") private var recentAgentSessions = Data()
     @State private var selectedSessionID = ""
@@ -698,7 +707,7 @@ struct Panel: View {
     }
 
     private func launch(_ prompt: String?) {
-        if prompt != nil, rememberAPIKeys, changedKeys.contains(engine) { saveCurrentKey() }
+        if prompt != nil, !accountMode, rememberAPIKeys, changedKeys.contains(engine) { saveCurrentKey() }
         if imageMode, prompt != nil {
             guard let provider = imageProvider else { return }
             let imagePrompt = request.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -735,6 +744,7 @@ struct Panel: View {
         let preferred = (path.wrappedValue as NSString).expandingTildeInPath
         let workingFolder = folder
         let selectedMode = mode
+        let account = accountMode
         let limit = timeout
         let selectedEffort = chosen == .gemini && (exactID != nil || name.isEmpty) ? "" : effort
         let selectedModel = chosen == .gemini ? exactID ?? name : name
@@ -747,10 +757,10 @@ struct Panel: View {
                     return
                 }
                 runner.start(engine: chosen, path: executable, folder: prompt == nil ? "" : workingFolder,
-                             key: keys[chosen] ?? Engine.inherited[chosen.keyName] ?? "",
+                             key: account ? "" : (keys[chosen] ?? Engine.inherited[chosen.keyName] ?? ""),
                              model: selectedModel, effort: selectedEffort, mode: selectedMode, timeout: limit,
                              prompt: prompt, commands: commands, allFolders: allFolders,
-                             outsideSandbox: outsideSandbox, sessionID: resumedID)
+                             outsideSandbox: outsideSandbox, sessionID: resumedID, account: account)
             }
             if prompt != nil { repeatLast = runTask }
             runTask()
@@ -898,29 +908,40 @@ struct Panel: View {
                                     ForEach(Engine.allCases, id: \.self) { Text($0.rawValue) }
                                 }
                             }
-                            SecureField(engine.keyName, text: key)
-                                .onSubmit { if rememberAPIKeys { saveCurrentKey() } }
-                            Toggle(tr("Запоминать ключ", "Remember key"), isOn: $rememberAPIKeys)
-                                .font(.caption)
-                            Menu {
-                                Button(tr("Открыть «Пароли»", "Open Passwords")) { openPasswords() }
-                                Button(tr("Привязать существующую запись…", "Link an existing entry…")) { openKeychainSettings() }
-                            } label: { Label(tr("Пароли и ключи", "Passwords and keys"), systemImage: "key") }
-                            HStack {
-                                if key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    Button(tr("Загрузить ключ", "Load key")) {
-                                        UserDefaults.standard.removeObject(forKey: autoloadSetting(engine))
-                                        keys.removeValue(forKey: engine)
-                                        changedKeys.remove(engine)
-                                        loadKeychain(for: engine)
-                                    }.disabled(keychainLoading.contains(engine))
-                                } else {
-                                    Button(tr("Сохранить ключ", "Save key")) { saveCurrentKey() }
-                                        .disabled(keychainSaving.contains(engine))
+                            if !imageMode && engine.supportsAccount {
+                                Picker(tr("Вход", "Sign-in"), selection: $useCLIAccount) {
+                                    Text("API key").tag(false)
+                                    Text(tr("Аккаунт CLI", "CLI account")).tag(true)
                                 }
+                                .disabled(runner.working)
                             }
-                            if let message = keychainMessage[engine] {
-                                Text(message).font(.caption).foregroundStyle(.secondary)
+                            if accountMode {
+                                Button(tr("Как войти…", "How to sign in…")) { showAccountHelp = true }
+                            } else {
+                                SecureField(engine.keyName, text: key)
+                                    .onSubmit { if rememberAPIKeys { saveCurrentKey() } }
+                                Toggle(tr("Запоминать ключ", "Remember key"), isOn: $rememberAPIKeys)
+                                    .font(.caption)
+                                Menu {
+                                    Button(tr("Открыть «Пароли»", "Open Passwords")) { openPasswords() }
+                                    Button(tr("Привязать существующую запись…", "Link an existing entry…")) { openKeychainSettings() }
+                                } label: { Label(tr("Пароли и ключи", "Passwords and keys"), systemImage: "key") }
+                                HStack {
+                                    if key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        Button(tr("Загрузить ключ", "Load key")) {
+                                            UserDefaults.standard.removeObject(forKey: autoloadSetting(engine))
+                                            keys.removeValue(forKey: engine)
+                                            changedKeys.remove(engine)
+                                            loadKeychain(for: engine)
+                                        }.disabled(keychainLoading.contains(engine))
+                                    } else {
+                                        Button(tr("Сохранить ключ", "Save key")) { saveCurrentKey() }
+                                            .disabled(keychainSaving.contains(engine))
+                                    }
+                                }
+                                if let message = keychainMessage[engine] {
+                                    Text(message).font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                             TextField(tr("Путь к ", "Path to ") + engine.binary, text: path)
                             if engine.resolve(path.wrappedValue) == nil {
@@ -938,7 +959,7 @@ struct Panel: View {
                             HStack {
                                 if engine == .gemini {
                                     Button(tr("Загрузить модели", "Load models")) { launch(nil) }
-                                        .disabled(key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                        .disabled(!accountMode && key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                                 }
                                 if engine != .gemini {
                                     Menu(tr("Модели", "Models")) {
@@ -1052,7 +1073,7 @@ struct Panel: View {
                                 .help(tr("Повторно отправить последний запрос с прежними настройками. Действия агента могут повториться.", "Send the last request again with the same settings. Agent actions may be repeated."))
                             Button { launch(text) } label: { Label(tr("Запустить", "Run"), systemImage: "play.fill") }
                                 .buttonStyle(.borderedProminent)
-                                .disabled((imageMode && imageProvider == nil) || [key.wrappedValue, request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                                .disabled((imageMode && imageProvider == nil) || (!accountMode && key.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || [request, folder].contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
                         }
                     }
                     Divider()
@@ -1100,11 +1121,11 @@ struct Panel: View {
             .tint(accent)
             .task(id: engine) { @MainActor in
                 await Task.yield()
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, !accountMode else { return }
                 loadKeychain(for: engine)
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                if keychainMessage[engine] == nil { loadKeychain(for: engine) }
+                if !accountMode && keychainMessage[engine] == nil { loadKeychain(for: engine) }
             }
             .onChange(of: key.wrappedValue) { _ in queueKeySave() }
             .onChange(of: rememberAPIKeys) { if $0 { saveCurrentKey() } else { keySaveDebounce?.cancel() } }
@@ -1125,10 +1146,33 @@ struct Panel: View {
                     }
                 }.padding(20).frame(width: 440)
             }
-            .onChange(of: imageMode) { if $0 && imageProvider == nil { engine = .gemini } }
+            .onChange(of: useCLIAccount) { _ in
+                repeatLast = nil
+                selectedSessionID = ""
+                runner.models = []
+                model = ""
+                effort = ""
+                if !accountMode { loadKeychain(for: engine) }
+            }
+            .alert(tr("Вход в CLI", "Sign in to the CLI"), isPresented: $showAccountHelp) {
+                Button(tr("Скопировать команду", "Copy command")) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(accountCommand, forType: .string)
+                }
+                Button(tr("Закрыть", "Close"), role: .cancel) {}
+            } message: {
+                Text(tr("Выполни в Терминале: ", "Run in Terminal: ") + accountCommand
+                     + tr("\nЗаверши вход у провайдера и вернись в PoruBot.", "\nComplete sign-in with the provider, then return to PoruBot.")
+                     + (engine == .gemini ? tr("\nЕсли в настройках agy задан modelProvider: gemini, убери его для входа в Терминале.",
+                                                "\nIf modelProvider: gemini is set in agy settings, remove it for terminal sign-in.") : ""))
+            }
+            .onChange(of: imageMode) { isImage in
+                if isImage && imageProvider == nil { engine = .gemini }
+                if isImage { loadKeychain(for: engine) }
+            }
             .onChange(of: engine) { value in
                 selectedSessionID = ""
-                model = value.presets.first ?? ""
+                model = accountMode ? "" : (value.presets.first ?? "")
                 effort = value == .codex ? "low" : ""
                 mode = "accept-edits"
                 runner.models = []

@@ -18,6 +18,7 @@ record Engine(string Name, string Binary, string Key, string Installer, string[]
     ];
     public bool Gemini => Binary == "agy";
     public bool Codex => Binary == "codex";
+    public string AccountCommand => Gemini ? "agy" : Codex ? "codex login" : "claude auth login";
     public bool Router => Name == "OpenRouter";
     public override string ToString() => Name;
 
@@ -41,7 +42,7 @@ record SavedSession(string Id, string Engine, string Folder, string Title)
     public override string ToString() => Title;
 }
 record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideSandbox = false, string Folder = "", string Theme = "system",
-    SavedSession[]? Sessions = null, string Language = "ru")
+    SavedSession[]? Sessions = null, string Language = "ru", bool UseCliAccount = false)
 {
     private static readonly string DirectoryPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PoruBot Agent");
@@ -79,7 +80,7 @@ record Settings(bool AllCommands = false, bool AllFolders = false, bool OutsideS
 }
 
 record AgentRequest(Engine Engine, string Key, string Folder, string Model, string Effort, bool Plan,
-    Settings Access, string Prompt, bool Catalog, IReadOnlyDictionary<(string, string), string> Models, string? SessionId = null);
+    Settings Access, string Prompt, bool Catalog, IReadOnlyDictionary<(string, string), string> Models, string? SessionId = null, bool Account = false);
 record AgentResult(string Answer, string Diagnostics, bool Success, string Usage, string? SessionId, double? Cost, JsonElement ModelUsage);
 record ProcessOutput(int Code, string Stdout, string Stderr);
 
@@ -89,14 +90,15 @@ static class Agent
     [
         "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN",
         "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENROUTER_API_KEY",
-        "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "GOOGLE_GEMINI_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+        "AGY_ADC_AUTH", "OPENAI_IDENTITY_TOKEN_FILE", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "GOOGLE_GEMINI_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
         "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"
     ];
 
     public static async Task<ProcessOutput> Run(AgentRequest r, Action<string> status, CancellationToken token)
     {
         string executable = r.Engine.Find() ?? await Install(r.Engine, status, token);
-        var environment = new Dictionary<string, string> { [r.Engine.Key] = r.Key };
+        var environment = new Dictionary<string, string>();
+        if (!r.Account) environment[r.Engine.Key] = r.Key;
         if (r.Engine.Router)
         {
             environment.Clear();
@@ -117,7 +119,7 @@ static class Agent
         string effort = r.Effort;
         if (r.Engine.Gemini)
         {
-            var options = new Dictionary<string, object> { ["modelProvider"] = "gemini" };
+            var options = new Dictionary<string, object> { ["modelProvider"] = r.Account ? "" : "gemini" };
             bool sandbox = r.Catalog || r.Plan || !r.Access.OutsideSandbox;
             if (!sandbox) options["enableTerminalSandbox"] = false;
             if (r.Access.AllCommands && !r.Catalog && !r.Plan)
